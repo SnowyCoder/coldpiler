@@ -1,0 +1,11 @@
+[package]
+name = "coldpiler"
+version = "0.1.0"
+authors = ["Rossi Lorenzo <snowycoder@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+coldpiler_codegen = { path = "../coldpiler_codegen" }
+coldpiler_parser = { path = "../coldpiler_parser" }
