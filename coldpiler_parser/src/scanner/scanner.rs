@@ -2,12 +2,12 @@ use crate::scanner::TokenType::{Error, Custom};
 use std::fmt::Debug;
 use crate::scanner::NFA;
 
-pub trait CustomTokenType : Copy + Debug + Eq {
+pub trait CustomTokenType : Copy + Debug + Eq + Ord {
 }
 
-impl<T: Copy + Debug + Eq> CustomTokenType for T {}
+impl<T: Copy + Debug + Eq + Ord> CustomTokenType for T {}
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Scanner<T: CustomTokenType> {
     node_count: u32,
     tokens: Vec<Option<T>>,
@@ -18,7 +18,6 @@ pub struct Scanner<T: CustomTokenType> {
 pub enum TokenType<T: CustomTokenType> {
     Custom(T),
     Error,
-    End,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,13 +56,21 @@ impl<T: CustomTokenType> Scanner<T> {
     }
 
     pub fn add_edge(&mut self, from: u32, to: u32, ch: u8) {
+        let new_to = self.add_edge_try(from, to, ch);
+        if new_to != to {
+            panic!(format!("conflict! node {}, {} is already connected to {}, trying to reconnect to {}", from, ch as char, new_to, to))
+        }
+    }
+
+    pub fn add_edge_try(&mut self, from: u32, to: u32, ch: u8) -> u32 {
         let ind = (from * 256 + ch as u32) as usize;
         if let Some(old_to) = self.node_map[ind] {
             if old_to != to {
-                panic!(format!("conflict! node {}, {} is already connected to {}, trying to reconnect to {}", from, ch, old_to, to))
+                return old_to;// Well, conflict
             }
         }
         self.node_map[ind] = Some(to);
+        to
     }
 
     pub fn nodes(&self) -> std::slice::Iter<Option<T>> {
@@ -148,7 +155,7 @@ impl<T: CustomTokenType> Scanner<T> {
         }
 
         if token_start_index != bytes.len() {
-            if last_successful_index == index - 1 {
+            if last_successful_state.is_some() && last_successful_index == index - 1{
                 tokens.push(Token {
                     text: data[token_start_index..index].to_string(),
                     ttype: Custom(self.get_token(last_successful_state.unwrap()).unwrap())
@@ -161,7 +168,6 @@ impl<T: CustomTokenType> Scanner<T> {
             }
         }
 
-        tokens.push(Token { text: "".to_string(), ttype: TokenType::End });
         tokens
     }
 }
@@ -170,7 +176,7 @@ impl<T: CustomTokenType> Scanner<T> {
 mod tests {
     use crate::scanner::{Scanner, Token, TokenType};
 
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
     enum TestTokenType {
         AB, ABABA
     }
@@ -189,8 +195,7 @@ mod tests {
         let res = x.tokenize("aba", 0);
         assert_eq!(res, [
             Token { text: "ab".to_owned(), ttype: TokenType::Custom(TestTokenType::AB) },
-            Token { text: "a".to_owned(), ttype: TokenType::Error },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "a".to_owned(), ttype: TokenType::Error }
         ]);
     }
 
@@ -208,14 +213,13 @@ mod tests {
         assert_eq!(res, [
             Token { text: "ab".to_owned(), ttype: TokenType::Custom(TestTokenType::AB) },
             Token { text: "ad".to_owned(), ttype: TokenType::Error },
-            Token { text: "ababa".to_owned(), ttype: TokenType::Custom(TestTokenType::ABABA) },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "ababa".to_owned(), ttype: TokenType::Custom(TestTokenType::ABABA) }
         ]);
     }
 
     #[test]
     fn test_3() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
         enum TestTokenType {
             NOT, NEW
         }
@@ -233,29 +237,20 @@ mod tests {
         x.set_token(3, TestTokenType::NOT);
         x.set_token(5, TestTokenType::NEW);
 
-        // print(dfa.run("not"))
-        // print(dfa.run("new"))
-        // print(dfa.run("now"))
-        // print(dfa.run("no"))
-
         assert_eq!(x.tokenize("not", 0), [
-            Token { text: "not".to_owned(), ttype: TokenType::Custom(TestTokenType::NOT) },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "not".to_owned(), ttype: TokenType::Custom(TestTokenType::NOT) }
         ]);
 
         assert_eq!(x.tokenize("new", 0), [
-            Token { text: "new".to_owned(), ttype: TokenType::Custom(TestTokenType::NEW) },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "new".to_owned(), ttype: TokenType::Custom(TestTokenType::NEW) }
         ]);
 
         assert_eq!(x.tokenize("now", 0), [
-            Token { text: "now".to_owned(), ttype: TokenType::Error },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "now".to_owned(), ttype: TokenType::Error }
         ]);
 
         assert_eq!(x.tokenize("no", 0), [
-            Token { text: "no".to_owned(), ttype: TokenType::Error },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "no".to_owned(), ttype: TokenType::Error }
         ]);
     }
 }

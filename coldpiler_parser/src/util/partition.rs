@@ -1,19 +1,17 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
+use std::fmt::{Display, Error, Formatter};
 use std::hash::Hash;
 
-use crate::util::HashableSet;
-use std::fmt::{Display, Formatter, Error};
-
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct Partition (HashableSet<u32>);
+#[derive(Debug, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
+pub struct Partition (BTreeSet<u32>);
 
 impl Partition {
     pub fn create_empty() -> Self {
-        Partition(HashableSet::new())
+        Partition(BTreeSet::new())
     }
 
-    pub fn create_from(set: HashSet<u32>) -> Self {
-        Partition(HashableSet::from(set))
+    pub fn create_from(set: BTreeSet<u32>) -> Self {
+        Partition(BTreeSet::from(set))
     }
 
     pub fn insert(&mut self, x: u32) {
@@ -28,7 +26,7 @@ impl Partition {
         self.0.contains(&x)
     }
 
-    pub fn iter(&self) -> std::collections::hash_set::Iter<u32> {
+    pub fn iter(&self) -> std::collections::btree_set::Iter<u32> {
         self.0.iter()
     }
 
@@ -43,7 +41,7 @@ impl Partition {
 
 impl Display for Partition {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        write!(f, "{:?}", (self.0).0)
+        write!(f, "{:?}", self.0)
     }
 }
 

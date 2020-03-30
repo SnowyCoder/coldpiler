@@ -3,15 +3,21 @@ use std::sync::atomic::Ordering;
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU32;
+use std::fmt;
+use std::sync::Mutex;
 
 static SCANNER_PLACEHOLDER_TYPE_LEN: AtomicU32 = AtomicU32::new(32);
 static PARSER_PLACEHOLDER_TYPE_LEN: AtomicU32 = AtomicU32::new(32);
 
+lazy_static! {
+    static ref SCANNER_DEBUG_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static ref PARSER_DEBUG_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+}
 
 // TODO: use Macros v1 to duplicate code
 macro_rules! create_parser_type {
-    ($name:ident, $atomic:ident) => {
-        #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Hash)]
+    ($name:ident, $atomic:ident, $debug_names:ident) => {
+        #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
         pub struct $name(pub u32);
 
         impl $name {
@@ -21,6 +27,12 @@ macro_rules! create_parser_type {
 
             pub fn set_size(new_size: u32) {
                 $atomic.store(new_size, Ordering::SeqCst);
+            }
+
+            pub fn set_debug_names(mut names: Vec<String>) {
+                let mut v = $debug_names.lock().unwrap();
+                v.clear();
+                v.append(&mut names);
             }
         }
 
@@ -46,11 +58,22 @@ macro_rules! create_parser_type {
                 }
             }
         }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let v = $debug_names.lock().unwrap();
+                let name = &v.get(self.0 as usize);
+                match name {
+                    Some(x) => f.write_str(x),
+                    None => f.write_str(&format!("{}", self.0)),
+                }
+            }
+        }
     }
 }
 
-create_parser_type!(ScannerPlaceholderType, SCANNER_PLACEHOLDER_TYPE_LEN);
-create_parser_type!(ParserPlaceholderType, PARSER_PLACEHOLDER_TYPE_LEN);
+create_parser_type!(ScannerPlaceholderType, SCANNER_PLACEHOLDER_TYPE_LEN, SCANNER_DEBUG_NAMES);
+create_parser_type!(ParserPlaceholderType, PARSER_PLACEHOLDER_TYPE_LEN, PARSER_DEBUG_NAMES);
 
 pub trait InstanceIndexable {
     fn instance(i: usize) -> Self;

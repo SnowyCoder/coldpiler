@@ -99,24 +99,25 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
                 if let Some(ch) = ch {
                     // Check if another edge exists from node "from" and character "ch"
                     // in that case the NFA doesn't represent directly a DFA, so fail.
-                    if res.get_next(from as u32, *ch as u8) != None {
+                    if res.add_edge_try(from as u32, *to, *ch) != *to {
                         return None;
                     }
-                    res.add_edge(from as u32, *to, *ch);
                 }
             }
         }
         Some(res)
     }
 
-    pub fn to_dfa(&self) -> Result<Scanner<T>, NfaToDfaError<T>> {
+    pub fn to_dfa(&self) -> Scanner<T> {
         let mut res = NFA::new();
 
-        /**
-         * Follows the no-char paths from the nodes
-         *   :param partition: The initial partition
-         *   :return: The initial partition with their no-char successors added
-         */
+        /// Follows the no-char paths from the nodes
+        ///
+        ///  # Arguments
+        /// * `partition` - The initial partition
+        ///
+        /// # Returns
+        /// Returns the initial partition with their no-char successors added
         fn no_char_closure<T: CustomTokenType>(nfa: &NFA<T>, partition: &mut Partition) {
             let mut work: Vec<u32> = partition.iter().copied().collect();
 
@@ -130,11 +131,13 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
             }
         }
 
-        /**
-         * Follows the no-char paths from the nodes
-         *   :param partition: The initial partition
-         *   :return: The initial partition with their no-char successors added
-         */
+        /// Follows the no-char paths from the nodes
+        ///
+        /// # Arguments
+        /// * `partition` - The initial partition
+        ///
+        /// # Returns
+        /// Returns the initial partition with their no-char successors added
         fn advance_partition<T: CustomTokenType>(nfa: &NFA<T>, partition: &Partition, ch: u8) -> Partition {
             let mut res = Partition::create_empty();
 
@@ -148,22 +151,15 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
            res
         }
 
-        /**
-         * Follows the no-char paths from the nodes
-         *   :param partition: The initial partition
-         *   :return: The initial partition with their no-char successors added
-         */
-        fn get_partition_token<T: CustomTokenType>(nfa: &NFA<T>, partition: &Partition) -> Result<Option<T>, NfaToDfaError<T>> {
-            let mut iter = partition.iter().filter_map(|x| nfa.get_node_token(*x));
-            let token = iter.next();
-            if let Some(second_token) = iter.next() {
-                let first = token.unwrap();
-                if first != second_token {
-                    return Err(NfaToDfaError::StateConflict(first, second_token));
-                    //panic!("Multiple tokens found for node partition: {:?} {:?}   !", first, second_token);
-                }
-            }
-            Ok(token)
+        fn get_partition_token<T: CustomTokenType>(nfa: &NFA<T>, partition: &Partition) -> Option<T> {
+            // Resolve conflicts by comparing the tokens and taking the lowest one
+            // that is the lowest one for definition ex:
+            // If = "if"
+            // Identifier = "[a-z]+"
+            // in that case If is declared before Identifier and thus it takes precedence.
+            partition.iter()
+                .filter_map(|x| nfa.get_node_token(*x))
+                .min()
         }
 
         let alphabet = self.get_alphabet();
@@ -174,7 +170,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
 
         let mut out_nodes = HashMap::new();
         out_nodes.insert(start_nodes.clone(), 0);
-        res.add_node(get_partition_token(self, &start_nodes)?);
+        res.add_node(get_partition_token(self, &start_nodes));
         let mut next_id = 1;
 
         let mut work_list = vec![(start_nodes, 0)];
@@ -190,23 +186,25 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
                 }
 
                 let after_index = out_nodes.get(&after_section)
-                    .map(|x| Ok(*x))
+                    .map(|x| *x)
                     .unwrap_or_else( || {
-                        res.add_node(get_partition_token(self, &after_section)?);
+                        res.add_node(get_partition_token(self, &after_section));
                         out_nodes.insert(after_section.clone(), next_id);
                         next_id += 1;
                         work_list.push((after_section, next_id - 1));
-                        Ok(next_id - 1)
-                })?;
+                        next_id - 1
+                });
 
                 res.add_edge(current_index, after_index, Some(*ch))
             }
         }
 
         // This should never fail if the conversion has been done correctly
-        Ok(res.to_dfa_direct().expect("Conversion failed"))
+        res.to_dfa_direct().expect("Conversion failed")
     }
 
+    /// Converts the text passed as input (a byte slice) to a NFA representing that byte string.
+    /// If a token is passed the last state in the NFA will have the same token.
     pub fn from_text(text: &[u8], token: Option<T>) -> NFA<T> {
         let mut nfa = NFA::new();
         nfa.add_empty_nodes(text.len() + 1);
@@ -219,12 +217,17 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
 
         nfa
     }
+
+    /// Converts a char to an NFA representing it, handling the multi-byte conversions.
+    /// If a token is passed the last state in the NFA (that represents the successful char parsing)
+    /// will have the same token.
+    pub fn from_char(ch: char, token: Option<T>) -> NFA<T> {
+        let mut enc = [0u8; 4];
+        let data = ch.encode_utf8(&mut enc).as_bytes();
+        NFA::from_text(data, token)
+    }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
-pub enum NfaToDfaError<T: CustomTokenType> {
-    StateConflict(T, T)
-}
 
 impl<T: CustomTokenType> Display for NonDeterministicFiniteAutomaton<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
@@ -251,7 +254,7 @@ impl<T: CustomTokenType> Display for NonDeterministicFiniteAutomaton<T> {
 mod tests {
     use crate::scanner::{Token, TokenType, NFA};
 
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
     enum TestTokenType {
         NOT, NEW
     }
@@ -276,17 +279,15 @@ mod tests {
         x.add_edge(n0, n4, Some('n' as u8));
         x.add_edge(n4, n5, Some('e' as u8));
         x.add_edge(n5, n6, Some('w' as u8));
-        let res = x.to_dfa().unwrap();
+        let res = x.to_dfa();
 
         assert_eq!(res.get_node_count(), 6);
         assert_eq!(res.tokenize("not", 0), [
-            Token { text: "not".to_owned(), ttype: TokenType::Custom(TestTokenType::NOT) },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "not".to_owned(), ttype: TokenType::Custom(TestTokenType::NOT) }
         ]);
 
         assert_eq!(res.tokenize("new", 0), [
-            Token { text: "new".to_owned(), ttype: TokenType::Custom(TestTokenType::NEW) },
-            Token { text: "".to_owned(), ttype: TokenType::End }
+            Token { text: "new".to_owned(), ttype: TokenType::Custom(TestTokenType::NEW) }
         ]);
     }
 }

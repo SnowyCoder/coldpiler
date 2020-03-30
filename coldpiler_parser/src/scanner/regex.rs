@@ -1,6 +1,11 @@
 use super::nfa::NFA;
 use super::scanner::CustomTokenType;
 use std::slice::Iter;
+use crate::util::char_range_inclusive;
+
+///! This crate contains the logic to convert from a regex to a fully functional NFA
+///! There isn't any hard "algorithm" in here, just some boilerplate code and some good
+///! conventions.
 
 fn concatenate<T: CustomTokenType>(nfas: &[&NFA<T>]) -> NFA<T> {
     let mut res = NFA::new();
@@ -31,21 +36,30 @@ fn or_catenate<T: CustomTokenType>(nfas: &[&NFA<T>], combine_end: bool) -> NFA<T
     //        -> nfa1 |
     // first |        -> last
     //        -> nfa2 |
+    let real_nfas = nfas.iter()
+        .enumerate()
+        .filter(|(_index, nfa)| {
+            nfa.node_count() > 0
+        });
     let mut res = NFA::new();
 
     let first = res.add_node(None);
-    let begins: Vec<u32> = nfas.iter().map(|x| res.add_nfa(x)).collect();
+    let begins: Vec<(usize, u32)> = real_nfas.clone().map(|(index, nfa)| (index, res.add_nfa(nfa))).collect();
 
     let end = if combine_end {
-        res.add_node(None)
+        let index = res.add_node(None);
+        if nfas.iter().any(|x| x.node_count() == 0) {
+            res.add_edge(first, index, None);
+        }
+        index
     } else {
         std::u32::MAX
     };
 
-    for (nfa_index, start_index) in begins.iter().enumerate() {
+    for (nfa_index, start_index) in begins.iter() {
         res.add_edge(first, *start_index, None);
         if combine_end {
-            res.add_edge(*start_index + nfas[nfa_index].node_count() as u32 - 1, end, None);
+            res.add_edge(*start_index + nfas[*nfa_index].node_count() as u32 - 1, end, None);
         }
     }
     
@@ -62,7 +76,7 @@ fn star_repeat<T: CustomTokenType>(nfa: &mut NFA<T>) {
     nfa.add_edge(nfa.node_count() as u32 - 1, 0, None);
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 struct CounterToken(i32);
 
 struct GroupParseData {
@@ -113,6 +127,97 @@ fn split_par<'a>(report: &mut RegexReportWriter, text: &'a str, par_end: char) -
     Ok((subtext, after_text))
 }
 
+fn parse_char<'a, T: CustomTokenType>(report: &mut RegexReportWriter, text: &'a str, token: Option<T>) -> Result<(&'a str, NFA<T>), ()> {
+    let first_char = text.chars().next().expect("Cannot parse empty sequence");
+    report.visit_char(first_char);
+
+    if first_char == '\\' {// Special char
+        let second_char = match text.chars().nth(1) {
+            Some(x) => x,
+            None => {
+                report.add_report(RegexReportLevel::Error, "Unclosed special char (use \\\\ to type \\)".to_string(), 0, 0);
+                return Ok(("", NFA::new()))
+            }
+        };
+        report.visit_char(second_char);
+        let mut nfas = Vec::new();
+        match second_char {
+            'a' => {
+                // Alpha chars
+                let iter = char_range_inclusive('a', 'z').chain(char_range_inclusive('A', 'Z'));
+                for x in iter {
+                    nfas.push(NFA::from_char(x, token));
+                }
+            }
+            's' => {
+                nfas.push(NFA::from_char(' ', token));
+                nfas.push(NFA::from_char('\t', token));
+                nfas.push(NFA::from_char('\r', token));
+                nfas.push(NFA::from_char('\n', token));
+            }
+            'x' => {
+                // Hex chars
+                let iter =  char_range_inclusive('a', 'z')
+                    .chain(char_range_inclusive('A', 'Z'))
+                    .chain(char_range_inclusive('0', '9'));
+                for c in iter {
+                    nfas.push(NFA::from_char(c, token));
+                }
+            }
+            't' => nfas.push(NFA::from_char('\t', token)),
+            'r' => nfas.push(NFA::from_char('\r', token)),
+            'n' => nfas.push(NFA::from_char('\n', token)),
+            '\\' => nfas.push(NFA::from_char('\\', token)),
+            _ => {
+                report.add_report(RegexReportLevel::Error, "Invalid special char (use \\\\ to type \\)".to_string(), 0, 1)
+            }
+        }
+        let nfa_refs: Vec<_> = nfas.iter().collect();
+        return Ok((&text[2..], or_catenate(&nfa_refs, true)))
+    } else {
+        return Ok((&text[1..], NFA::from_char(first_char, token)))
+    }
+}
+
+fn parse_char_group<T: CustomTokenType>(report: &mut RegexReportWriter, mut text: &str, token: Option<T>) -> Result<NFA<T>, ()> {
+    let mut nfas = Vec::new();
+    while let Some(first_char) = text.chars().next() {
+        if first_char == '-' {
+            report.visit_char('-');
+            nfas.push(NFA::from_text(&['-' as u8], token));
+            text = &text[1..];
+            continue
+        }
+
+        if text.chars().nth(1) == Some('-') && text.chars().nth(2).is_some() {
+            // RANGE
+            let from_range = text.chars().nth(0).unwrap();
+            let to_range = text.chars().nth(2).unwrap();
+
+            report.visit_char(from_range);
+            report.visit_char('-');
+            report.visit_char(to_range);
+
+            if (from_range as u32) >= (to_range as u32) {
+                report.add_report(RegexReportLevel::Error, format!("Invalid range {}-{}", from_range, to_range), 0, 2);
+                return Err(())
+            }
+
+            for x in char_range_inclusive(from_range, to_range) {
+                nfas.push(NFA::from_char(x, token));
+            }
+            text = &text[3..]
+        } else {
+            let (new_text, nfa) = parse_char(report, text, token)?;
+            text = new_text;
+            nfas.push(nfa);
+        }
+    }
+    let ptrs: Vec<&NFA<T>> = nfas.iter().collect();
+    let res = or_catenate(&ptrs, true);
+    Ok(res)
+}
+
 fn parse_group<T: CustomTokenType>(report: &mut RegexReportWriter, text: &str, token: Option<T>) -> Result<NFA<T>, ()> {
     let mut data = GroupParseData {
         nfa: NFA::new(),
@@ -124,6 +229,14 @@ fn parse_group<T: CustomTokenType>(report: &mut RegexReportWriter, text: &str, t
 
     while let Some(ch) = titer.next() {
         report.visit_char(ch);
+
+        if ch == '|' {
+            data.flush_last();
+            let final_nfa = data.transform_finalize(token, is_last_char_star);
+            let next_nfa = parse_group(report, titer.as_str(), token)?;
+            return Ok(or_catenate(&[&final_nfa, &next_nfa], true))
+        }
+
         is_last_char_star = false;
         match ch {
             '(' => {
@@ -141,16 +254,8 @@ fn parse_group<T: CustomTokenType>(report: &mut RegexReportWriter, text: &str, t
                 titer = after_text.chars();
 
                 let token = data.allocate_token();
-                let nfas: Vec<NFA<CounterToken>> = subtext.chars()
-                    .map(|x| {
-                        report.visit_char(x);
-                        let mut enc = [0u8; 4];
-                        let data = x.encode_utf8(&mut enc).as_bytes();
-                        NFA::from_text(data, Some(token))
-                    })
-                    .collect();
-                let nfa_ptrs: Vec<&NFA<CounterToken>> = nfas.iter().collect();
-                data.last_nfa = Some(or_catenate(&nfa_ptrs, true));
+                let res = parse_char_group(report, subtext, Some(token))?;
+                data.last_nfa = Some(res);
                 report.visit_char(']')
             },
             '*' | '+' => {
@@ -189,12 +294,6 @@ fn parse_group<T: CustomTokenType>(report: &mut RegexReportWriter, text: &str, t
                 }
                 report.advance_index(subtext.bytes().len());
                 report.visit_char('}')
-            }
-            '|' => {
-                data.flush_last();
-                let final_nfa = data.transform_finalize(token, is_last_char_star);
-                let next_nfa = parse_group(report, titer.as_str(), token)?;
-                return Ok(or_catenate(&[&final_nfa, &next_nfa], true))
             }
             _ => {
                 // Adding text
@@ -316,11 +415,10 @@ pub struct RegexReportEntry {
 mod tests {
     use crate::scanner::*;
     use crate::scanner::regex::{RegexReport, RegexReportEntry, RegexReportLevel};
-    use crate::scanner::nfa::NfaToDfaError;
 
     #[test]
     fn test_simple() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
         enum TestTokenType {
             End
         }
@@ -329,7 +427,7 @@ mod tests {
 
         let dfa = regex_to_nfa(&mut report, "ad(b|c)*", Some(TestTokenType::End));
         assert!(report.is_empty());
-        let dfa = dfa.unwrap().to_dfa().unwrap();
+        let dfa = dfa.unwrap().to_dfa();
 
         assert_eq!(None, dfa.run_single_token("adba", 0));
         assert_eq!(Some(TestTokenType::End), dfa.run_single_token("adbcbcbc", 0));
@@ -340,14 +438,14 @@ mod tests {
 
     #[test]
     fn test_raw_chars() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
             End
         }
         let mut report = RegexReport::new();
         let dfa = regex_to_nfa(&mut report, "[ab]", Some(TestTokenType::End));
         assert!(report.is_empty());
-        let dfa = dfa.unwrap().to_dfa().unwrap().minimize_hopcroft();
+        let dfa = dfa.unwrap().to_dfa().minimize_hopcroft();
 
         assert_eq!(None, dfa.run_single_token("c", 0));
         assert_eq!(Some(TestTokenType::End), dfa.run_single_token("a", 0));
@@ -358,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_map_simple() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
         enum TestTokenType {
            A, B
         }
@@ -375,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_map() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
             Space, Not, Nor, And, BinaryNumber
         }
@@ -391,7 +489,7 @@ mod tests {
             (BinaryNumber, "[0123456789]+"),
         ]);
         assert!(report.is_empty());
-        let dfa = nfa.unwrap().to_dfa().unwrap().minimize_hopcroft();
+        let dfa = nfa.unwrap().to_dfa().minimize_hopcroft();
 
         assert_eq!(dfa.tokenize("not  \n0 nor 15 and", 0), [
             Token { text: "not".to_string(), ttype: TokenType::Custom(Not) },
@@ -403,13 +501,12 @@ mod tests {
             Token { text: "15".to_string(), ttype: TokenType::Custom(BinaryNumber) },
             Token { text: " ".to_string(), ttype: TokenType::Custom(Space) },
             Token { text: "and".to_string(), ttype: TokenType::Custom(And) },
-            Token { text: "".to_string(), ttype: TokenType::End },
         ]);
     }
 
     #[test]
     fn test_misc() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
             A, B,
         }
@@ -417,16 +514,44 @@ mod tests {
 
         let mut report = RegexReport::new();
 
-        let _nfa = regex_map_to_nfa(&mut report, &[
+        let nfa = regex_map_to_nfa(&mut report, &[
             (A, "[0123456789]+"),
-            (B, r"[\s\t]+"),
+            (B, r"[\s]+"),
         ]);
         assert!(report.is_empty());
+        let dfa = nfa.unwrap().to_dfa();
+
+        assert_eq!(TokenType::Custom(TestTokenType::B), dfa.tokenize(" \t  \n\t", 0)[0].ttype);
+
+        // Test some obscure bug in hopcroft's split algorithm
+        let nfa = regex_map_to_nfa(&mut report, &[
+            (A, "var"),
+            (B, r"[av][ar]*|k"),
+        ]);
+        assert!(report.is_empty());
+        let dfa = nfa.unwrap().to_dfa();
+
+        assert_eq!(TokenType::Custom(TestTokenType::A), dfa.tokenize("var", 0)[0].ttype);
+        assert_eq!(TokenType::Custom(TestTokenType::B), dfa.tokenize("vara", 0)[0].ttype);
+        assert_eq!(TokenType::Custom(TestTokenType::B), dfa.tokenize("k", 0)[0].ttype);
+
+        // Other tests
+        let nfa = regex_map_to_nfa(&mut report, &[
+            (A, r"aa*|b"),
+        ]);
+        let nfa = nfa.unwrap();
+        assert!(report.is_empty());
+        eprintln!("NFA: {}", nfa);
+        let dfa = nfa.to_dfa();
+
+
+        //assert_eq!(TokenType::Custom(TestTokenType::A), dfa.tokenize("var", 0)[0].ttype);
+        assert_eq!(TokenType::Custom(TestTokenType::A), dfa.tokenize("a", 0)[0].ttype);
     }
 
     #[test]
     fn test_errors() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
             A, B,
         }
@@ -474,18 +599,5 @@ mod tests {
             ]
         }, report);
         assert!(nfa.is_ok());
-
-        let mut report = RegexReport::new();
-        let nfa = regex_map_to_nfa(&mut report,
-                                   &[
-                                       (A, "aba"),
-                                       (B, "a[cb]a")
-        ]);
-        assert!(report.is_empty());
-        let dfa = nfa.unwrap().to_dfa();
-        match dfa {
-            Err(NfaToDfaError::StateConflict(x, y)) if (x, y) == (A, B) || (x, y) == (B, A) => {},
-            _ => assert!(false)
-        }
     }
 }

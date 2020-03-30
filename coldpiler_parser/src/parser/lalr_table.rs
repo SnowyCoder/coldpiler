@@ -21,7 +21,8 @@ pub struct ShiftReducer<T: CustomTokenType + Enumerable, N: GrammarTokenType> {
     state_count: u32,
     action_table: Vec<Action>,
     goto_table: Vec<u32>,
-    rules: Vec<(N, u32)>
+    rules: Vec<(N, u32)>,
+    ignore_tokens: Vec<T>,
 }
 
 impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> Display for ShiftReducer<T, N> {
@@ -59,6 +60,10 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> D
         for (index, (token, len)) in self.rules.iter().enumerate() {
             writeln!(f, "{}> {:?} {:?}", index, token, len)?;
         }
+        writeln!(f, "Ignore tokens:")?;
+        for token in self.ignore_tokens.iter() {
+            writeln!(f, "- {:?}", token)?;
+        }
         Ok(())
     }
 }
@@ -69,9 +74,10 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
         state_count: u32,
         action_table: Vec<Action>,
         goto_table: Vec<u32>,
-        rules: Vec<(N, u32)>
+        rules: Vec<(N, u32)>,
+        ignore_tokens: Vec<T>
     ) -> Self {
-        ShiftReducer { root_node_type, state_count, action_table, goto_table, rules }
+        ShiftReducer { root_node_type, state_count, action_table, goto_table, rules, ignore_tokens }
     }
 
     #[cfg(feature = "codegen")]
@@ -111,8 +117,20 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
             }
         });
 
+        let ignore_tokens = self.ignore_tokens.iter().map(|x| {
+            let name = terminal_names[x.index()];
+            quote! {
+                T::#name
+            }
+        });
+
         quote! {
-            #root_node, #state_count, vec![#(#action_table), *], vec![#(#goto_table), *], vec![#(#rules), *]
+            #root_node,
+            #state_count,
+            vec![#(#action_table), *],
+            vec![#(#goto_table), *],
+            vec![#(#rules), *],
+            vec![#(#ignore_tokens), *]
         }
     }
 
@@ -127,14 +145,39 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
         self.action_table[Self::action_index(state, token)]
     }
 
-    pub fn set_action(&mut self, state: u32, token: Option<T>, value: Action) {
+    pub fn set_action(&mut self, state: u32, token: Option<T>, value: Action) -> Result<(), LRConflict<T, N>> {
         let index = Self::action_index(state, token);
 
         let old_val = self.action_table[index];
         if old_val != Action::Reject && old_val != value {
-            panic!("Conflict action[{}][{:?}]L {:?} or {:?}, is your grammar LR(1)?", state, token, self.action_table[index], value)
+            // TODO: can we detect and display ambiguities in the language?
+            // This IS a conflict, but why is there a conflict:
+            // The lookahead has already been controlled so that means that the language is invalid?
+            // It might be, but here's another case:
+            // <Expr> := Number | <Expr> Plus <Expr>
+            // This will generate a state in the DFA that's like this:
+            // <Expr> := <Expr> * Plus <Expr> *
+            // (where * is where's the reading point).
+            // This means that the DFA will gladly shift a Plus, but will also reduce the Expr
+            // and then use the rule <E> := <E> * P <E>
+            // This means that there is a tree ambiguity:
+            // To visualize this: the phrase:
+            // Number Plus Number Plus Number
+            // Can be constructed either by
+            //       E
+            //   E   | \
+            // / | \ | |
+            // N P N P N
+            // or by
+            //   E
+            // / |   E
+            // | | / | \
+            // N P N P N
+            // So try to disambiguate your grammar if you're sure it's LALR(1).
+            return Err(LRConflict::Action(state, token, old_val, value))
         }
         self.action_table[index] = value;
+        Ok(())
     }
 
     pub fn goto_index(&self, state: u32, token: N) -> usize {
@@ -159,15 +202,35 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
         }
     }
 
-    pub fn set_goto(&mut self, state: u32, token: N, dest: u32) {
+    pub fn set_goto(&mut self, state: u32, token: N, dest: u32) -> Result<(), LRConflict<T, N>>{
         let index = self.goto_index(state, token);
 
         let old_val = self.goto_table[index];
         if old_val != u32::max_value() && old_val != dest {
-            panic!("Conflict in goto[{}][{:?}]:  {} or {}, is your grammar LR(1)?", state, token, self.goto_table[index], dest);
+            return Err(LRConflict::Goto(state, token, self.goto_table[index], dest));
+            //panic!("Conflict in goto[{}][{:?}]:  {} or {}, is your grammar LR(1)?", state, token, self.goto_table[index], dest);
         }
 
         self.goto_table[index] = dest;
+        Ok(())
+    }
+
+    fn advance_token(&self, tokens: &[Token<T>], mut next_index: usize) -> usize {
+        loop {
+            let token = match tokens.get(next_index) {
+                Some(x) => x,
+                None => break,
+            };
+            let token = match token.ttype {
+                TokenType::Custom(x) => x,
+                _ => break,// Not my problem
+            };
+            if !self.ignore_tokens.contains(&token) {
+                break;
+            }
+            next_index += 1;
+        }
+        next_index
     }
 
     pub fn parse(&self, tokens: &[Token<T>]) -> SyntaxTree<T, N> {
@@ -177,7 +240,7 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
 
         let mut stack = vec![(0u32, usize::max_value())];
 
-        let mut next_index = 0;
+        let mut next_index = self.advance_token(tokens, 0);
 
         loop {
             let (top_state, _top_node) = *stack.last().unwrap();
@@ -186,7 +249,7 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
             let lookahead_type =  lookahead.map(|x|
                 match x.ttype {
                     TokenType::Custom(x) => x,
-                    _ => panic!("Unexpected token found"),
+                    _ => panic!("Unexpected error token found"),
                 }
             );
             let current_action = self.get_action(top_state, lookahead_type);
@@ -197,7 +260,7 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
                     let token = lookahead.unwrap();
                     let node = tree.create_node(GrammarToken::Terminal(lookahead_type.unwrap()), Some(token.text.clone()), None);
                     stack.push((new_state, node));
-                    next_index += 1;
+                    next_index = self.advance_token(tokens, next_index + 1);
                 },
                 Action::Reduce(rule_i) => {
                     let rule = self.rules[rule_i as usize];
@@ -228,10 +291,16 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
                     stack.push((new_state, reduced_node));
                 },
                 Action::Accept => return tree,
-                Action::Reject => panic!("Input rejected"),
+                Action::Reject => panic!("Input rejected on index {} (tk: {:?})", next_index, lookahead),
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LRConflict<T: CustomTokenType, N: GrammarTokenType> {
+    Goto(u32, N, u32, u32),
+    Action(u32, Option<T>, Action, Action),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd)]
@@ -380,8 +449,15 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
                 if let Some(x) = expected_token {
                     let new_state = self.goto(&state.item_set, x);
                     let goto_index = match self.state_to_index.get(&new_state) {
-                        Some(x) => *x,
-                        None => self.create_state(new_state.clone())
+                        Some(x) => {
+                            //eprintln!("{} + {:?} = {}", next_index - 1, expected_token, *x);
+                            *x
+                        },
+                        None => {
+                            let s = self.create_state(new_state.clone());
+                            //eprintln!("{} + {:?} = {} new {:?}", next_index - 1, expected_token, s, new_state);
+                            s
+                        }
                     };
                     //println!("{} + {:?} = [{}]{:?}", next_index - 1, x, goto_index, new_state);
                     self.states[next_index - 1].edges.push((goto_index, x));
@@ -488,7 +564,7 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
         res
     }
 
-    fn build_table(&self) -> ShiftReducer<T, N> {
+    fn build_table(&self) -> Result<ShiftReducer<T, N>, LRConflict<T, N>> {
         // The Follow(t: NonTerminal) -> Set<Option<Terminal>> function
         // It's easier to build it in advance than to deal with recursion...
         let follow = self.build_follow();
@@ -514,6 +590,7 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
             action_table: vec![Action::Reject; action_len],
             goto_table: vec![u32::max_value(); goto_len],
             rules,
+            ignore_tokens: self.grammar.ignored.clone(),
         };
 
         for (state_i, state) in self.states.iter().enumerate() {
@@ -524,8 +601,7 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
                         ParsingRule::Root => {
                             // Accept Rule "Root -> <grammar.root> * $"
                             // If we are at point * and there is no more input
-
-                            res.set_action(state_i as u32, None, Action::Accept);
+                            res.set_action(state_i as u32, None, Action::Accept)?;
                         },
                         ParsingRule::Grammar(rule_i) => {
                             // The rule is R -> a ... b *
@@ -545,7 +621,7 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
 
                             // Write the reduction only on the lookahead tokens.
                             for x in reduce_tokens {
-                                res.set_action(state_i as u32, *x, Action::Reduce(rule_i));
+                                res.set_action(state_i as u32, *x, Action::Reduce(rule_i))?;
                             }
                         },
                     }
@@ -554,20 +630,20 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
             for (to, token) in state.edges.iter() {
                 match token {
                     GrammarToken::Terminal(token) => {
-                        res.set_action(state_i as u32, Some(*token), Action::Shift(*to))
+                        res.set_action(state_i as u32, Some(*token), Action::Shift(*to))?
                     },
                     GrammarToken::NonTerminal(token) => {
-                        res.set_goto(state_i as u32, *token, *to)
+                        res.set_goto(state_i as u32, *token, *to)?
                     },
                 }
             }
         }
-        res
+        Ok(res)
     }
 }
 
 impl<T: CustomTokenType + Enumerable + Hash + 'static, N: GrammarTokenType + 'static> Grammar<T, N> {
-    pub fn to_ll_table(&self) -> ShiftReducer<T, N> {
+    pub fn to_ll_table(&self) -> Result<ShiftReducer<T, N>, LRConflict<T, N>> {
         let mut data = DfaBuildData {
             grammar: self,
             state_to_index: HashMap::new(),
@@ -589,7 +665,7 @@ mod tests {
 
     #[test]
     fn basic_test() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
             OPEN,
             CLOSE,
@@ -641,11 +717,11 @@ mod tests {
         let grammar = Grammar::from_raw(NT(X), vec![
             vec![vec![T(OPEN), NT(X), T(CLOSE)],
                  vec![T(OPEN), T(CLOSE)]]
-        ]);
+        ], vec![]);
         // Grammar is:
         // X ::= ( X ) | ( )
 
-        let table = grammar.to_ll_table();
+        let table = grammar.to_ll_table().unwrap();
         let tokens = vec![
             Token { text: "(".to_string(), ttype: TokenType::Custom(OPEN) },
             Token { text: "(".to_string(), ttype: TokenType::Custom(OPEN) },
@@ -665,7 +741,7 @@ mod tests {
 
     #[test]
     fn harder_test() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
             A,
             B,
@@ -718,12 +794,12 @@ mod tests {
         let grammar = Grammar::from_raw(NT(X), vec![
             vec![vec![T(A)],
                  vec![T(A), T(B)]]
-        ]);
+        ], vec![]);
         // Grammar is:
         // X ::= A B | A
         // This requires a lookahead when reducing
 
-        let table = grammar.to_ll_table();
+        let table = grammar.to_ll_table().unwrap();
         let tokens = vec![
             Token { text: "a".to_string(), ttype: TokenType::Custom(A) },
             Token { text: "b".to_string(), ttype: TokenType::Custom(B) },
@@ -739,9 +815,9 @@ mod tests {
 
     #[test]
     fn calculator_test() {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         enum TestTokenType {
-            Statement,
+            NUMBER, PLUS, SPACE
         }
 
         impl Enumerable for TestTokenType {
@@ -749,20 +825,22 @@ mod tests {
 
             fn index(&self) -> usize {
                 match self  {
-                    TestTokenType::Statement => 0,
+                    TestTokenType::NUMBER => 0,
+                    TestTokenType::PLUS => 1,
+                    TestTokenType::SPACE => 2,
                 }
             }
 
             fn enumerate() -> Self::Iterator {
                 use TestTokenType::*;
-                static TYPES: [TestTokenType; 1] = [Statement];
+                static TYPES: [TestTokenType; 3] = [NUMBER, PLUS, SPACE];
                 TYPES.iter().cloned()
             }
         }
 
         #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
         enum TestGrammarTokenType {
-            NUMBER, PLUS
+            Statement,
         }
 
         type TGTT = TestGrammarTokenType;
@@ -772,13 +850,12 @@ mod tests {
 
             fn index(&self) -> usize {
                 return match self {
-                    TGTT::NUMBER => 0,
-                    TGTT::PLUS => 1,
+                    TGTT::Statement => 0,
                 }
             }
 
             fn enumerate() -> Self::Iterator {
-                static TYPES: [TGTT; 2] = [TGTT::NUMBER, TGTT::PLUS];
+                static TYPES: [TGTT; 1] = [TGTT::Statement];
                 TYPES.iter().cloned()
             }
         }
@@ -787,13 +864,17 @@ mod tests {
         use GrammarToken::NonTerminal as NT;
         use TestTokenType::*;
         use TestGrammarTokenType::*;
-        let grammar = Grammar::from_raw(NT(Statement), vec![
-            vec![vec![T(NUMBER)], vec![T(NUMBER), T(PLUS), NT(Statement)]],
-        ]);
+        let grammar = Grammar::from_raw(
+            NT(Statement),
+            vec![
+                vec![vec![T(NUMBER)], vec![T(NUMBER), T(PLUS), NT(Statement)]],
+            ],
+            vec![]
+        );
         // Grammar is:
         // S ::= Number | Number Plus <S>
 
-        let table = grammar.to_ll_table();
+        let table = grammar.to_ll_table().unwrap();
         let tokens = vec![
             Token { text: "2".to_string(), ttype: TokenType::Custom(NUMBER) },
             Token { text: "+".to_string(), ttype: TokenType::Custom(PLUS) },

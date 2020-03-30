@@ -1,4 +1,4 @@
-use syn::{braced, Ident, LitStr, Result, Token};
+use syn::{braced, Ident, LitStr, Result, Token, Error};
 use syn::parse::{Parse, ParseStream};
 
 pub enum GrammarToken {
@@ -71,9 +71,50 @@ impl Parse for GrammarDefinition {
     }
 }
 
+pub struct ScannerMeta {
+    pub ignored: bool,
+}
+
+impl Parse for ScannerMeta {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut meta = ScannerMeta {
+            ignored: false
+        };
+        let mut errors = Vec::new();
+
+        while input.peek(Token![@]) {
+            input.parse::<Token![@]>()?;
+            let name: Ident = input.parse()?;
+
+            match name.to_string().as_str() {
+                "ignore" =>  {
+                    meta.ignored = true;
+                },
+                _ => {
+                    errors.push(Error::new_spanned(name.clone(), format!("Unknown annotation {}", name)))
+                }
+            }
+        }
+        if let Some(error) = errors.drain(..).fold(None, |acc: Option<Error>, x| {
+            Some(match acc {
+                Some(mut old_err) => {
+                    old_err.combine(x);
+                    old_err
+                },
+                None => x,
+            })
+        }) {
+            return Err(error);
+        }
+
+        Ok(meta)
+    }
+}
+
 pub struct ScannerDefinition {
     pub name: Ident,
     pub rule: LitStr,
+    pub meta: ScannerMeta,
 }
 
 impl Parse for ScannerDefinition {
@@ -81,7 +122,8 @@ impl Parse for ScannerDefinition {
         let name: Ident = input.parse()?;
         input.parse::<Token![=]>()?;
         let rule: LitStr = input.parse()?;
-        Ok(ScannerDefinition { name, rule })
+        let meta: ScannerMeta = input.parse()?;
+        Ok(ScannerDefinition { name, rule, meta })
     }
 }
 

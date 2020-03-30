@@ -26,20 +26,29 @@ impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
         if consume_last && self.tokens.len() > self.next_token_index + 1 {
             self.next_token_index += 1;
         }
-        self.current_token = &self.tokens[self.next_token_index];
+        self.current_token = match self.tokens.get(self.next_token_index) {
+            None => {
+                // Try to short-circuit every token matching it to 0
+                // crash if it's not possible
+                while let Some((focus, _focus_node)) = self.focus {
+                    if self.grammar.can_be_zero(focus) {
+                        self.consume_focus()
+                    } else {
+                        // Todo: better error management.
+                        panic!(format!("Token stream terminates too early, expected {:?}", focus));
+                    }
+                }
+                return
+            },
+            Some(x) => x,
+        };
         if self.current_token.ttype == TokenType::Error {
             eprintln!("Error: unrecognized token {}", self.current_token.text);
             self.advance_token(true)
-        } else if self.current_token.ttype == TokenType::End {
-            // Try to short-circuit every token matching it to 0
-            // crash if it's not possible
-            while let Some((focus, _focus_node)) = self.focus {
-                if self.grammar.can_be_zero(focus) {
-                    self.consume_focus()
-                } else {
-                    // Todo: better error management.
-                    panic!(format!("Token stream terminates too early, expected {:?}", focus));
-                }
+        } else if let TokenType::Custom(x) = self.current_token.ttype {
+            if self.grammar.ignored.contains(&x) {
+                // Ignore token: a.k.a. readvance consuming the last token (this one)
+                self.advance_token(true);
             }
         }
     }
@@ -146,7 +155,7 @@ mod tests {
     use crate::scanner::{Token, TokenType};
     use std::iter::Cloned;
 
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum TestTokenType {
         SPACE,
         NUMBER,
@@ -157,7 +166,6 @@ mod tests {
     enum TestGrammarTokenType {
         Statement,
         StatementTail,
-        Space,
     }
 
     type TGTT = TestGrammarTokenType;
@@ -169,12 +177,11 @@ mod tests {
             return match self {
                 TGTT::Statement => 0,
                 TGTT::StatementTail => 1,
-                TGTT::Space => 2,
             }
         }
 
         fn enumerate() -> Self::Iterator {
-            static TYPES: [TGTT; 3] = [TGTT::Statement, TGTT::StatementTail, TGTT::Space];
+            static TYPES: [TGTT; 2] = [TGTT::Statement, TGTT::StatementTail];
             TYPES.iter().cloned()
         }
     }
@@ -185,12 +192,12 @@ mod tests {
         let grammar = Grammar::from_raw(NonTerminal(TestGrammarTokenType::Statement), vec![
             vec![vec![GrammarToken::Terminal(NUMBER), GrammarToken::NonTerminal(TGTT::StatementTail)]],
             vec![vec![GrammarToken::Terminal(PLUS), GrammarToken::Terminal(NUMBER), GrammarToken::NonTerminal(TestGrammarTokenType::StatementTail)],
-                 vec![]],
-            vec![vec![GrammarToken::Terminal(SPACE)]]
-        ]);
+                 vec![]]
+        ], vec![SPACE]);
 
         let tokens = vec![
             Token { text: "40".to_string(), ttype: TokenType::Custom(NUMBER) },
+            Token { text: "\n ".to_string(), ttype: TokenType::Custom(SPACE) },
             Token { text: "+".to_string(), ttype: TokenType::Custom(PLUS) },
             Token { text: "3".to_string(), ttype: TokenType::Custom(NUMBER) },
         ];

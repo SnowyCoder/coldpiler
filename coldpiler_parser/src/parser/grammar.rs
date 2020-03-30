@@ -41,13 +41,15 @@ pub type GrammarDefinition<T, N> = Vec<GrammarRule<T, N>>;
 pub struct Grammar<T: CustomTokenType, N: GrammarTokenType> {
     pub root: GrammarToken<T, N>,
     pub defs: Vec<GrammarDefinition<T, N>>,
+    pub ignored: Vec<T>,
 }
 
 impl<T: CustomTokenType, N: GrammarTokenType> Grammar<T, N> {
-    pub fn from_raw(root: GrammarToken<T, N>, defmap: Vec<GrammarDefinition<T, N>>) -> Self {
+    pub fn from_raw(root: GrammarToken<T, N>, defmap: Vec<GrammarDefinition<T, N>>, ignored: Vec<T>) -> Self {
         Grammar {
             root,
             defs: defmap,
+            ignored,
         }
     }
 

@@ -1,13 +1,12 @@
 # Coldpiler
 
 This is a more serious version of [compiler-exercises](https://github.com/SnowyCoder/compiler-exercises), so it's a toy compiler written in rust.
-I've yet to decide what to compile so for now it's a really complicated calculator with compile time LALR table and regex compilation
-(and optimization because I hate myself).
+You can find the language it compiles in the LANGUAGE.md file.
 <br>
 To make this project a bit more readable I've divided the project in three parts:
 - `coldpiler_parser` contains the boilerplate code for the lexer and parser
 - `coldpiler_codegen` provides the procedural macros that generate the code for lexer and parser
-- `coldpiler` is the heart of the calculator (~70 lines)
+- `coldpiler` the heart of the compiler
 
 ### Dependencies
 My plan is to go to 0-dependencies but if you want to use procedural macros `syn` and `quote` are almost required,

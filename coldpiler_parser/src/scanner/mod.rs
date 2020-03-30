@@ -7,5 +7,5 @@ pub use scanner::{
     Scanner, Token, TokenType, CustomTokenType,
 };
 
-pub use nfa::{NonDeterministicFiniteAutomaton, NFA, NfaToDfaError};
+pub use nfa::{NonDeterministicFiniteAutomaton, NFA};
 pub use regex::{regex_to_nfa, regex_map_to_nfa, RegexReport, RegexReportLevel, RegexReportEntry};

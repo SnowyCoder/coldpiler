@@ -1,17 +1,20 @@
+#[macro_use]
+extern crate lazy_static;
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
 
 use coldpiler_parser;
-use coldpiler_parser::parser::Enumerable;
-use coldpiler_parser::scanner::{NfaToDfaError, regex_map_to_nfa, RegexReport};
+use coldpiler_parser::parser::LRConflict;
+use coldpiler_parser::scanner::{regex_map_to_nfa, RegexReport};
+use proc_macro2::Span;
 use syn::{Ident, parse_macro_input};
 
 use quote::{quote, quote_spanned};
 
 use crate::parse::{Definition, Grammar, GrammarDefinition, Grammars, GrammarToken};
 use crate::token_types::{ParserPlaceholderType, ScannerPlaceholderType};
-use proc_macro2::Span;
+
 
 mod parse;
 mod token_types;
@@ -26,7 +29,7 @@ fn generate_token_code(enum_name: Ident, token_names: &[&Ident]) -> proc_macro2:
     });
     let type_count = token_names.len();
     quote! {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         pub enum #enum_name {
             #(#token_names), *
         }
@@ -89,6 +92,9 @@ fn generate_scanner_code(grammar: &Grammar) -> proc_macro2::TokenStream {
         }
     }).collect();
 
+    let names: Vec<String> = data.iter().map(|x| format!("{}", x.0)).collect();
+    ScannerPlaceholderType::set_debug_names(names);
+
     let work_data: Vec<(ScannerPlaceholderType, &str)> = data.iter()
         .enumerate()
         .map(|(index, x)| {
@@ -118,24 +124,7 @@ fn generate_scanner_code(grammar: &Grammar) -> proc_macro2::TokenStream {
         }
     }
 
-    let dfa = match nfa.unwrap().to_dfa() {
-        Ok(x) => x,
-        Err(e) => {
-            let desc = match e {
-                NfaToDfaError::StateConflict(a, b) => {
-                    let an = data[a.index()].0;
-                    let bn = data[b.index()].0;
-                    format!("Conflict between  '{}' and '{}'", an, bn)
-                },
-            };
-            return quote_spanned!(
-                grammar.name.span() =>
-                compile_error!(#desc);
-                unimplemented!()
-            )
-        },
-    };
-
+    let dfa = nfa.unwrap().to_dfa();
     let (dfa_raw1, dfa_raw2) = dfa.minimize_hopcroft().into_raw();
 
     let dfa_raw_1_code = dfa_raw1.iter().map(|x| {
@@ -173,14 +162,19 @@ fn generate_parser_code(grammar: &Grammar) -> proc_macro2::TokenStream {
         }
     }).collect();
 
+    let names: Vec<String> = data.iter().map(|x| format!("{}", x.name)).collect();
+    ParserPlaceholderType::set_debug_names(names);
+
     ParserPlaceholderType::set_size(data.len() as u32);
 
-    let terminal_names: Vec<&Ident> = grammar.defs.iter().filter_map(|x| {
+    let terminals = grammar.defs.iter().filter_map(|x| {
         match x {
             Definition::Grammar(_) => None,
-            Definition::Scanner(x) => Some(&x.name),
+            Definition::Scanner(x) => Some(x),
         }
-    }).collect();
+    });
+
+    let terminal_names: Vec<&Ident> = terminals.clone().map(|x| &x.name).collect();
 
     let nonterminal_names: Vec<&Ident> = data.iter().map(|x| &x.name).collect();
 
@@ -191,20 +185,25 @@ fn generate_parser_code(grammar: &Grammar) -> proc_macro2::TokenStream {
 
     let mut errors = Vec::new();
 
+    let find_terminal_by_name = |name: &Ident, errors: &mut Vec<(Span, String)>| {
+        match terminal_names.iter().position(|x| *x == name) {
+            Some(idx) => {
+                ScannerPlaceholderType(idx as u32)
+            },
+            None => {
+                errors.push((name.span(), format!("Cannot find Terminal {}", name)));
+                ScannerPlaceholderType(0)
+            }
+        }
+    };
+
+
     let defmap: Vec<coldpiler_parser::parser::GrammarDefinition<ScannerPlaceholderType, ParserPlaceholderType>> = data.iter().map(|x| {
         x.rules.iter().map(|rule|
             rule.0.iter().map(|token|
                 match token {
                     GrammarToken::Terminal(name) => {
-                        match terminal_names.iter().position(|x| *x == name) {
-                            Some(idx) => {
-                                coldpiler_parser::parser::GrammarToken::Terminal(ScannerPlaceholderType(idx as u32))
-                            },
-                            None => {
-                                errors.push((name.span(), format!("Cannot find Terminal {}", name)));
-                                coldpiler_parser::parser::GrammarToken::Terminal(ScannerPlaceholderType(0))
-                            }
-                        }
+                        coldpiler_parser::parser::GrammarToken::Terminal(find_terminal_by_name(name, &mut errors))
                     },
                     GrammarToken::NonTerminal(name) => {
                         match nonterminal_names.iter().position(|x| *x == name) {
@@ -222,16 +221,44 @@ fn generate_parser_code(grammar: &Grammar) -> proc_macro2::TokenStream {
         ).collect()
     }).collect();
 
+    let ignored: Vec<_> = terminals.filter_map(|x| {
+        if x.meta.ignored {
+            Some(find_terminal_by_name(&x.name, &mut errors))
+        } else {
+            None
+        }
+    }).collect();
+
     let create_parser_code = if errors.is_empty() {
         let real_grammar = coldpiler_parser::parser::Grammar::from_raw(
-            root_token, defmap
+            root_token, defmap, ignored
         );
         let table = real_grammar.to_ll_table();
-        let raw_table_code = table.to_raw_code(&terminal_names, &nonterminal_names);
-        quote! {
-            use ScannerTokenType as T;
-            use ParserTokenType as N;
-            ShiftReducer::from_raw(#raw_table_code)
+        match table {
+            Ok(table) => {
+                let raw_table_code = table.to_raw_code(&terminal_names, &nonterminal_names);
+                quote! {
+                    use ScannerTokenType as T;
+                    use ParserTokenType as N;
+                    ShiftReducer::from_raw(#raw_table_code)
+                }
+            },
+            Err(conflict) => {
+                let desc = match conflict {
+                    LRConflict::Goto(state, token, old, new) => {
+                        let old = &data[old as usize].name;
+                        let new = &data[new as usize].name;
+                        format!("Goto conflict in state: {} with token {:?}, old: {:?} new: {:?}", state, token, old, new)
+                    },
+                    LRConflict::Action(state, token, old, new) => {
+                        format!("Action conflict in state: {} with token {:?}, old: {:?} new: {:?}", state, token, old, new)
+                    },
+                };
+                quote! {
+                    compile_error!(#desc);
+                    unimplemented!()
+                }
+            },
         }
     } else {
         let errors = errors.drain(..).map(|(span, descr)| {
@@ -292,34 +319,4 @@ pub fn coldpile(item: TokenStream) -> TokenStream {
     quote!(
         #(#codes)*
     ).into()
-}
-
-
-
-#[cfg(test)]
-mod tests {
-    use coldpiler_parser::parser::{Grammar, GrammarToken};
-
-    use crate::token_types::{ParserPlaceholderType, ScannerPlaceholderType};
-
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-
-    #[test]
-    fn it_not_works() {
-        ScannerPlaceholderType::set_size(2);
-        ParserPlaceholderType::set_size(2);
-        let grammar = Grammar::from_raw(
-            GrammarToken::NonTerminal(ParserPlaceholderType(0)),
-            vec![
-                vec![
-                    vec![GrammarToken::Terminal(ScannerPlaceholderType(1)), GrammarToken::NonTerminal(ParserPlaceholderType(1))]
-                ],
-                vec![vec![GrammarToken::Terminal(ScannerPlaceholderType(0)), GrammarToken::Terminal(ScannerPlaceholderType(1)), GrammarToken::NonTerminal(ParserPlaceholderType(1))], vec![]]
-            ]
-        );
-        grammar.to_ll_table();
-    }
 }
