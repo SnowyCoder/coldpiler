@@ -1,5 +1,7 @@
 use coldpiler_codegen::coldpile;
 
+mod context;
+mod error;
 mod ast;
 mod interpret;
 
@@ -40,29 +42,54 @@ lang = {
 
 use lang::*;
 use crate::ast::Value;
+use coldpiler_parser::scanner::{Token, TokenLoc};
+use crate::context::{Context, TextProvider};
+use crate::error::{CompilationError, ErrorLoc};
+use crate::interpret::SymbolTable;
 
-pub mod st {
+struct TokenizationError(TokenLoc);
+
+impl CompilationError for TokenizationError {
+    fn error_type(&self) -> String {
+        "Token not recognized".to_owned()
+    }
+
+    fn loc(&self) -> ErrorLoc {
+        ErrorLoc::SingleLocation(self.0.span)
+    }
+
+    fn summarize(&self) -> String {
+        "Unexpected char".to_owned()
+    }
+
+    fn description(&self) -> String {
+        "Cannot recognize any token".to_owned()
+    }
 }
 
-pub fn run(file: String) {
+pub fn run_tokenize(context: &mut Context) -> Result<Vec<Token<ScannerTokenType>>, ()> {
+    let content = context.source.read_all();
+    let (tokens, unrecognized) = tokenize(&mut context.trie, &content);
+
+    if !unrecognized.is_empty() {
+        for loc in unrecognized {
+            context.print_error(&TokenizationError(loc));
+        }
+        Err(())
+    } else {
+        Ok(tokens)
+    }
+}
+
+pub fn run(content: String) -> Result<Value, ()> {
+    let mut context = Context::new(TextProvider::Plain(content));
+
     let parser = create_shift_parser();
-    let tokens = tokenize(&file);
+    let tokens = run_tokenize(&mut context)?;
     //println!("{:?}", tokens);
     let st = parser.parse(&tokens);
-    let ast = ast::parse::build_main(&st);
-    let ret = interpret::exec_block(Default::default(), &ast);
+    let ast = ast::parse::build_main(&context, &st);
+    let ret = interpret::exec(SymbolTable::new(&context), &ast)?;
 
-    match ret {
-        Ok(x) => {
-            print!("Returned: ");
-            match x {
-                Value::Unit => println!("Unit"),
-                Value::I32(x) => println!("{}", x),
-                Value::Bool(x) => println!("{}", x),
-            }
-        },
-        Err(x) => {
-            println!("{:?}", x)
-        },
-    }
+    Ok(ret)
 }

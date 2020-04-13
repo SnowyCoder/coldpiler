@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::fmt;
-
-use crate::parser::{Enumerable, Grammar, GrammarToken, GrammarTokenType, SyntaxTree};
-use crate::parser::grammar::GrammarRuleIndex;
-use crate::scanner::{CustomTokenType, Token, TokenType};
-use crate::util::{index_twice, IndexTwice};
 use std::hash::Hash;
+
+use coldpiler_util::Enumerable;
+
+use crate::parser::{Grammar, GrammarToken, GrammarTokenType, SyntaxTree};
+use crate::parser::grammar::GrammarRuleIndex;
+use crate::scanner::{ScannerTokenType, Token};
+use crate::util::{index_twice, IndexTwice};
+use crate::loc::SpanLoc;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Action {
@@ -16,7 +19,7 @@ pub enum Action {
     Reject,
 }
 
-pub struct ShiftReducer<T: CustomTokenType + Enumerable, N: GrammarTokenType> {
+pub struct ShiftReducer<T: ScannerTokenType + Enumerable, N: GrammarTokenType> {
     root_node_type: GrammarToken<T, N>,
     state_count: u32,
     action_table: Vec<Action>,
@@ -25,7 +28,7 @@ pub struct ShiftReducer<T: CustomTokenType + Enumerable, N: GrammarTokenType> {
     ignore_tokens: Vec<T>,
 }
 
-impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> Display for ShiftReducer<T, N> {
+impl<T: ScannerTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> Display for ShiftReducer<T, N> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "Root: {:?}", self.root_node_type)?;
         write!(f, "  ")?;
@@ -68,7 +71,7 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> D
     }
 }
 
-impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> ShiftReducer<T, N> {
+impl<T: ScannerTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> ShiftReducer<T, N> {
     pub fn from_raw(
         root_node_type: GrammarToken<T, N>,
         state_count: u32,
@@ -216,16 +219,8 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
     }
 
     fn advance_token(&self, tokens: &[Token<T>], mut next_index: usize) -> usize {
-        loop {
-            let token = match tokens.get(next_index) {
-                Some(x) => x,
-                None => break,
-            };
-            let token = match token.ttype {
-                TokenType::Custom(x) => x,
-                _ => break,// Not my problem
-            };
-            if !self.ignore_tokens.contains(&token) {
+        while let Some(token) = tokens.get(next_index) {
+            if !self.ignore_tokens.contains(&token.ttype) {
                 break;
             }
             next_index += 1;
@@ -246,27 +241,27 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
             let (top_state, _top_node) = *stack.last().unwrap();
             let lookahead = tokens.get(next_index);
 
-            let lookahead_type =  lookahead.map(|x|
-                match x.ttype {
-                    TokenType::Custom(x) => x,
-                    _ => panic!("Unexpected error token found"),
-                }
-            );
+            let lookahead_type =  lookahead.map(|x| x.ttype);
             let current_action = self.get_action(top_state, lookahead_type);
             //println!("{}, action: {:?}", top_state, current_action);
 
             match current_action {
                 Action::Shift(new_state) => {
                     let token = lookahead.unwrap();
-                    let node = tree.create_node(GrammarToken::Terminal(lookahead_type.unwrap()), Some(token.text.clone()), None);
+                    let node = tree.create_node(GrammarToken::Terminal(lookahead_type.unwrap()), token.text.span, Some(token.text), None);
                     stack.push((new_state, node));
                     next_index = self.advance_token(tokens, next_index + 1);
                 },
                 Action::Reduce(rule_i) => {
                     let rule = self.rules[rule_i as usize];
+
+                    let initial_span = stack.last()
+                        .map(|(_state, node)| tree.node(*node).span)
+                        .unwrap_or_else(SpanLoc::zero);
+
                     // Reduce the last (rule.1) nodes into a NonTerminal node of type (rule.0)
                     // So first we create the node
-                    let reduced_node = tree.create_node(GrammarToken::NonTerminal(rule.0), None, None);
+                    let reduced_node = tree.create_node(GrammarToken::NonTerminal(rule.0), initial_span, None, None);
 
                     // Then we add all the rule.1 last nodes in the stack in reverse
                     // Why reverse? we're iterating the grammar Left to Right, so if we iterate the
@@ -298,7 +293,7 @@ impl<T: CustomTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> S
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum LRConflict<T: CustomTokenType, N: GrammarTokenType> {
+pub enum LRConflict<T: ScannerTokenType, N: GrammarTokenType> {
     Goto(u32, N, u32, u32),
     Action(u32, Option<T>, Action, Action),
 }
@@ -319,18 +314,18 @@ struct ParsingItem {
 struct ParsingItemSet(Vec<ParsingItem>);
 
 #[derive(Clone)]
-struct DfaBuildStateData<T: CustomTokenType, N: GrammarTokenType> {
+struct DfaBuildStateData<T: ScannerTokenType, N: GrammarTokenType> {
     item_set: ParsingItemSet,
     edges: Vec<(u32, GrammarToken<T, N>)>,
 }
 
-struct DfaBuildData<'a, T: CustomTokenType, N: GrammarTokenType> {
+struct DfaBuildData<'a, T: ScannerTokenType, N: GrammarTokenType> {
     grammar: &'a Grammar<T, N>,
     state_to_index: HashMap<ParsingItemSet, u32>,
     states: Vec<DfaBuildStateData<T, N>>,// TODO: think of some way to use a reference.
 }
 
-impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Hash + 'static, N: GrammarTokenType  + 'static {
+impl<'a, T, N> DfaBuildData<'a, T, N> where T: ScannerTokenType + Enumerable + Hash + 'static, N: GrammarTokenType  + 'static {
     fn get_expected_token(&self, item: &ParsingItem) -> Option<GrammarToken<T, N>> {
         match item.rule {
             ParsingRule::Root => {
@@ -454,9 +449,7 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
                             *x
                         },
                         None => {
-                            let s = self.create_state(new_state.clone());
-                            //eprintln!("{} + {:?} = {} new {:?}", next_index - 1, expected_token, s, new_state);
-                            s
+                            self.create_state(new_state.clone())
                         }
                     };
                     //println!("{} + {:?} = [{}]{:?}", next_index - 1, x, goto_index, new_state);
@@ -642,7 +635,7 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: CustomTokenType + Enumerable + Ha
     }
 }
 
-impl<T: CustomTokenType + Enumerable + Hash + 'static, N: GrammarTokenType + 'static> Grammar<T, N> {
+impl<T: ScannerTokenType + Enumerable + Hash + 'static, N: GrammarTokenType + 'static> Grammar<T, N> {
     pub fn to_ll_table(&self) -> Result<ShiftReducer<T, N>, LRConflict<T, N>> {
         let mut data = DfaBuildData {
             grammar: self,
@@ -657,11 +650,13 @@ impl<T: CustomTokenType + Enumerable + Hash + 'static, N: GrammarTokenType + 'st
 
 #[cfg(test)]
 mod tests {
+    use std::iter::Cloned;
     use std::slice::Iter;
 
-    use crate::parser::{Enumerable, Grammar, GrammarToken, SyntaxNode, SyntaxTree};
-    use crate::scanner::{Token, TokenType};
-    use std::iter::Cloned;
+    use crate::parser::{Grammar, GrammarToken, SyntaxNode, SyntaxTree};
+    use crate::scanner::{Token, TokenLoc};
+    use coldpiler_util::Enumerable;
+    use crate::loc::SpanLoc;
 
     #[test]
     fn basic_test() {
@@ -699,7 +694,7 @@ mod tests {
             type Iterator = Cloned<Iter<'static, Self>>;
 
             fn index(&self) -> usize {
-                return match self {
+                match self {
                     TGTT::X => 0,
                 }
             }
@@ -723,19 +718,19 @@ mod tests {
 
         let table = grammar.to_ll_table().unwrap();
         let tokens = vec![
-            Token { text: "(".to_string(), ttype: TokenType::Custom(OPEN) },
-            Token { text: "(".to_string(), ttype: TokenType::Custom(OPEN) },
-            Token { text: ")".to_string(), ttype: TokenType::Custom(CLOSE) },
-            Token { text: ")".to_string(), ttype: TokenType::Custom(CLOSE) },
+            Token { text: TokenLoc::of(0, 0, 0, 0, 0), ttype: OPEN },
+            Token { text: TokenLoc::of(0, 0, 1, 0, 1), ttype: OPEN },
+            Token { text: TokenLoc::of(1, 0, 2, 0, 2), ttype: CLOSE },
+            Token { text: TokenLoc::of(1, 0, 3, 0, 3), ttype: CLOSE },
         ];
         let tree = table.parse(&tokens);
         assert_eq!(SyntaxTree::from_nodes_unchecked(vec![
-                SyntaxNode { parent: Some(5), gtype: T(OPEN), text: Some("(".to_string()), children: vec![] },
-                SyntaxNode { parent: Some(3), gtype: T(OPEN), text: Some("(".to_string()), children: vec![] },
-                SyntaxNode { parent: Some(3), gtype: T(CLOSE), text: Some(")".to_string()), children: vec![] },
-                SyntaxNode { parent: Some(5), gtype: NT(X), text: None, children: vec![1, 2] },
-                SyntaxNode { parent: Some(5), gtype: T(CLOSE), text: Some(")".to_string()), children: vec![]},
-                SyntaxNode { parent: None, gtype: NT(X), text: None, children: vec![0, 3, 4] },
+            SyntaxNode { parent: Some(5), gtype: T(OPEN), text: Some(TokenLoc::of(0, 0, 0, 0, 0)), span: SpanLoc::of(0, 0, 0, 0), children: vec![] },
+            SyntaxNode { parent: Some(3), gtype: T(OPEN), text: Some(TokenLoc::of(0, 0, 1, 0, 1)), span: SpanLoc::of(0, 1, 0, 1), children: vec![] },
+            SyntaxNode { parent: Some(3), gtype: T(CLOSE), text: Some(TokenLoc::of(1, 0, 2, 0, 2)), span: SpanLoc::of(0, 2, 0, 2), children: vec![] },
+            SyntaxNode { parent: Some(5), gtype: NT(X), text: None, span: SpanLoc::of(0, 1, 0, 2), children: vec![1, 2] },
+            SyntaxNode { parent: Some(5), gtype: T(CLOSE), text: Some(TokenLoc::of(1, 0, 3, 0, 3)), span: SpanLoc::of(0, 3, 0, 3), children: vec![]},
+            SyntaxNode { parent: None, gtype: NT(X), text: None, span: SpanLoc::of(0, 0, 0, 3), children: vec![0, 3, 4] },
         ]), tree);
     }
 
@@ -776,7 +771,7 @@ mod tests {
             type Iterator = Cloned<Iter<'static, Self>>;
 
             fn index(&self) -> usize {
-                return match self {
+                match self {
                     TGTT::X => 0,
                 }
             }
@@ -801,14 +796,14 @@ mod tests {
 
         let table = grammar.to_ll_table().unwrap();
         let tokens = vec![
-            Token { text: "a".to_string(), ttype: TokenType::Custom(A) },
-            Token { text: "b".to_string(), ttype: TokenType::Custom(B) },
+            Token { text: TokenLoc::of(0, 0, 0, 0, 0), ttype: A },
+            Token { text: TokenLoc::of(1, 0, 1, 0, 1), ttype: B },
         ];
         let tree = table.parse(&tokens);
         assert_eq!(SyntaxTree::from_nodes_unchecked(vec![
-            SyntaxNode { parent: Some(2), gtype: T(A), text: Some("a".to_string()), children: vec![] },
-            SyntaxNode { parent: Some(2), gtype: T(B), text: Some("b".to_string()), children: vec![] },
-            SyntaxNode { parent: None, gtype: NT(X), text: None, children: vec![0, 1] },
+            SyntaxNode { parent: Some(2), gtype: T(A), text: Some(TokenLoc::of(0, 0, 0, 0, 0)), span: SpanLoc::of(0, 0, 0, 0), children: vec![] },
+            SyntaxNode { parent: Some(2), gtype: T(B), text: Some(TokenLoc::of(1, 0, 1, 0, 1)), span: SpanLoc::of(0, 1, 0, 1), children: vec![] },
+            SyntaxNode { parent: None, gtype: NT(X), text: None, span: SpanLoc::of(0, 0, 0, 1), children: vec![0, 1] },
         ]), tree);
     }
 
@@ -849,7 +844,7 @@ mod tests {
             type Iterator = Cloned<Iter<'static, Self>>;
 
             fn index(&self) -> usize {
-                return match self {
+                match self {
                     TGTT::Statement => 0,
                 }
             }
@@ -875,10 +870,11 @@ mod tests {
         // S ::= Number | Number Plus <S>
 
         let table = grammar.to_ll_table().unwrap();
+        // Original text: 2+40
         let tokens = vec![
-            Token { text: "2".to_string(), ttype: TokenType::Custom(NUMBER) },
-            Token { text: "+".to_string(), ttype: TokenType::Custom(PLUS) },
-            Token { text: "40".to_string(), ttype: TokenType::Custom(NUMBER) },
+            Token { text: TokenLoc::of(0, 0, 0, 0, 0), ttype: NUMBER },
+            Token { text: TokenLoc::of(1, 0, 1, 0, 1), ttype: PLUS },
+            Token { text: TokenLoc::of(2, 0, 2, 0, 3), ttype: NUMBER },
         ];
         let tree = table.parse(&tokens);
         eprintln!("{:?}", tree);

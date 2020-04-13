@@ -10,6 +10,7 @@ default = []
 codegen = ["proc-macro2", "quote"]
 
 [dependencies]
+coldpiler_util = { path = "../coldpiler_util" }
 proc-macro2 = { version = "1.0", optional = true }
 quote = { version = "1.0", optional = true }
 

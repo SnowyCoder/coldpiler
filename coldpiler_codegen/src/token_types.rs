@@ -1,4 +1,4 @@
-use coldpiler_parser::parser::Enumerable;
+use coldpiler_util::Enumerable;
 use std::sync::atomic::Ordering;
 use std::iter::FusedIterator;
 use std::marker::PhantomData;

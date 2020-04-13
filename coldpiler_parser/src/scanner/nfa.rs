@@ -2,17 +2,17 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Error, Formatter};
 
 use crate::util::Partition;
-use super::scanner::{CustomTokenType, Scanner};
+use super::scanner::{ScannerTokenType, Scanner};
 
 #[derive(Clone, Debug, Default)]
-pub struct NonDeterministicFiniteAutomaton<T: CustomTokenType> {
+pub struct NonDeterministicFiniteAutomaton<T: ScannerTokenType> {
     nodes: Vec<Option<T>>,
     neighbours : Vec<Vec<(u32, Option<u8>)>>,
 }
 
 pub type NFA<T> = NonDeterministicFiniteAutomaton<T>;
 
-impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
+impl<T: ScannerTokenType> NonDeterministicFiniteAutomaton<T> {
     pub fn new() -> Self {
         NonDeterministicFiniteAutomaton {
             nodes: vec![],
@@ -80,7 +80,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
     }
 
     pub fn map_tokens<F, N>(self, f: F) -> NFA<N>
-        where F: Fn(Option<T>) -> Option<N>, N: CustomTokenType {
+        where F: Fn(Option<T>) -> Option<N>, N: ScannerTokenType {
         NFA {
             nodes: self.nodes.iter().map(|&x| f(x)).collect(),
             neighbours: self.neighbours,
@@ -118,7 +118,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
         ///
         /// # Returns
         /// Returns the initial partition with their no-char successors added
-        fn no_char_closure<T: CustomTokenType>(nfa: &NFA<T>, partition: &mut Partition) {
+        fn no_char_closure<T: ScannerTokenType>(nfa: &NFA<T>, partition: &mut Partition) {
             let mut work: Vec<u32> = partition.iter().copied().collect();
 
             while let Some(node) = work.pop() {
@@ -138,7 +138,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
         ///
         /// # Returns
         /// Returns the initial partition with their no-char successors added
-        fn advance_partition<T: CustomTokenType>(nfa: &NFA<T>, partition: &Partition, ch: u8) -> Partition {
+        fn advance_partition<T: ScannerTokenType>(nfa: &NFA<T>, partition: &Partition, ch: u8) -> Partition {
             let mut res = Partition::create_empty();
 
             for node in partition.iter() {
@@ -151,7 +151,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
            res
         }
 
-        fn get_partition_token<T: CustomTokenType>(nfa: &NFA<T>, partition: &Partition) -> Option<T> {
+        fn get_partition_token<T: ScannerTokenType>(nfa: &NFA<T>, partition: &Partition) -> Option<T> {
             // Resolve conflicts by comparing the tokens and taking the lowest one
             // that is the lowest one for definition ex:
             // If = "if"
@@ -186,7 +186,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
                 }
 
                 let after_index = out_nodes.get(&after_section)
-                    .map(|x| *x)
+                    .copied()
                     .unwrap_or_else( || {
                         res.add_node(get_partition_token(self, &after_section));
                         out_nodes.insert(after_section.clone(), next_id);
@@ -229,7 +229,7 @@ impl<T: CustomTokenType> NonDeterministicFiniteAutomaton<T> {
 }
 
 
-impl<T: CustomTokenType> Display for NonDeterministicFiniteAutomaton<T> {
+impl<T: ScannerTokenType> Display for NonDeterministicFiniteAutomaton<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         f.write_fmt(format_args!("Nodes: {}\n", self.nodes.len()))?;
         for (index, token) in self.nodes.iter().enumerate() {
@@ -252,7 +252,8 @@ impl<T: CustomTokenType> Display for NonDeterministicFiniteAutomaton<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::{Token, TokenType, NFA};
+    use crate::scanner::{Token, NFA, TokenLoc};
+    use coldpiler_util::radix_tree::RadixTree;
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
     enum TestTokenType {
@@ -273,22 +274,24 @@ mod tests {
         let n4 = x.add_node(None);
         let n5 = x.add_node(None);
         let n6 = x.add_node(Some(TestTokenType::NEW));
-        x.add_edge(n0, n1, Some('n' as u8));
-        x.add_edge(n1, n2, Some('o' as u8));
-        x.add_edge(n2, n3, Some('t' as u8));
-        x.add_edge(n0, n4, Some('n' as u8));
-        x.add_edge(n4, n5, Some('e' as u8));
-        x.add_edge(n5, n6, Some('w' as u8));
+        x.add_edge(n0, n1, Some(b'n'));
+        x.add_edge(n1, n2, Some(b'o'));
+        x.add_edge(n2, n3, Some(b't'));
+        x.add_edge(n0, n4, Some(b'n'));
+        x.add_edge(n4, n5, Some(b'e'));
+        x.add_edge(n5, n6, Some(b'w'));
         let res = x.to_dfa();
 
-        assert_eq!(res.get_node_count(), 6);
-        assert_eq!(res.tokenize("not", 0), [
-            Token { text: "not".to_owned(), ttype: TokenType::Custom(TestTokenType::NOT) }
-        ]);
+        let mut trie = RadixTree::new();
 
-        assert_eq!(res.tokenize("new", 0), [
-            Token { text: "new".to_owned(), ttype: TokenType::Custom(TestTokenType::NEW) }
-        ]);
+        assert_eq!(res.get_node_count(), 6);
+        assert_eq!(res.tokenize(&mut trie, "not", 0), (vec![
+            Token { text: TokenLoc::of(trie.get(b"not").unwrap(), 0, 0, 0, 2), ttype: TestTokenType::NOT }
+        ], vec![]));
+
+        assert_eq!(res.tokenize(&mut trie, "new", 0), (vec![
+            Token { text: TokenLoc::of(trie.get(b"new").unwrap(), 0, 0, 0, 2), ttype: TestTokenType::NEW }
+        ], vec![]));
     }
 }
 

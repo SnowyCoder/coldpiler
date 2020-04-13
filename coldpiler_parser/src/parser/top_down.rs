@@ -1,12 +1,13 @@
+use crate::loc::SpanLoc;
 use crate::parser::grammar::{GrammarToken, GrammarTokenType};
 use crate::parser::tree::{NodeIndex, SyntaxTree};
-use crate::scanner::{CustomTokenType, Token, TokenType};
+use crate::scanner::{ScannerTokenType, Token};
 
 use super::grammar::Grammar;
 
 // Top-down parsing using a stupid method
 
-struct ParseData<'a, T, N> where T : CustomTokenType, N : GrammarTokenType {
+struct ParseData<'a, T, N> where T : ScannerTokenType, N : GrammarTokenType {
     grammar: &'a Grammar<T, N>,
     tokens: &'a [Token<T>],
     next_token_index: usize,
@@ -19,7 +20,7 @@ struct ParseData<'a, T, N> where T : CustomTokenType, N : GrammarTokenType {
 }
 
 
-impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
+impl<'a, T: ScannerTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
     // This method advances the focus and focus_node, consuming the current one if
     // requested.
     fn advance_token(&mut self, consume_last: bool) {
@@ -42,14 +43,9 @@ impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
             },
             Some(x) => x,
         };
-        if self.current_token.ttype == TokenType::Error {
-            eprintln!("Error: unrecognized token {}", self.current_token.text);
-            self.advance_token(true)
-        } else if let TokenType::Custom(x) = self.current_token.ttype {
-            if self.grammar.ignored.contains(&x) {
-                // Ignore token: a.k.a. readvance consuming the last token (this one)
-                self.advance_token(true);
-            }
+        if self.grammar.ignored.contains(&self.current_token.ttype) {
+            // Ignore token: a.k.a. readvance consuming the last token (this one)
+            self.advance_token(true);
         }
     }
 
@@ -65,11 +61,13 @@ impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
 
             match focus {
                 GrammarToken::Terminal(token) => {
-                    if self.current_token.ttype != TokenType::Custom(token) {
+                    if self.current_token.ttype != token {
                         // TODO: better error management
                         panic!(format!("Error: expected {:?} but found {:?}", token, self.current_token))
                     } else {
-                        self.tree.mut_node(focus_node).text = Some(self.current_token.text.clone());
+                        let node = self.tree.mut_node(focus_node);
+                        node.text = Some(self.current_token.text);
+                        node.span = self.current_token.text.span;
                         self.consume_focus();
                         self.advance_token(true);
                     }
@@ -79,13 +77,7 @@ impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
                     // enough nodes for them (as they all will be children of the focus node)
                     // then reverse the nodes and put them in the node_stack.
                     // TODO: better error checking
-
-                    // TODO: better type usage? we shouldn't be rechecking the type as it is already
-                    //       being checked in the advance_token routine.
-                    let current_token = match self.current_token.ttype {
-                        TokenType::Custom(t) => t,
-                        _ => unreachable!(),
-                    };
+                    let current_token = self.current_token.ttype;
                     // Note: using "self" in the lambda captures it in the closure so it will be captured
                     // as mutable, to avoid this (as we need to use node_stack also as mutable) we
                     // capture in the closure only "tree" borrowing a reference to it.
@@ -95,7 +87,7 @@ impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
                         self.grammar.find_next(focus.index(), current_token)
                         .unwrap_or_else(|| panic!(format!("Unexpected token {:?}", current_token)))
                         .iter()
-                        .map(|&x| (x, tree.create_node(x, None, Some(focus_node))))
+                        .map(|&x| (x, tree.create_node(x, SpanLoc::zero(), None, Some(focus_node))))
                         .collect();
 
                     self.node_stack.extend(nodes.drain(..).rev());
@@ -107,7 +99,7 @@ impl<'a, T: CustomTokenType, N: GrammarTokenType> ParseData<'a, T, N> {
 }
 
 
-impl<T: CustomTokenType, N: GrammarTokenType> Grammar<T, N> {
+impl<T: ScannerTokenType, N: GrammarTokenType> Grammar<T, N> {
     // Wow, how does this amazing advanced algorithm work?
     // It just traverses the grammar top-down creating nodes when it needs them, literally the first
     // method that came to mind while reading.
@@ -118,7 +110,7 @@ impl<T: CustomTokenType, N: GrammarTokenType> Grammar<T, N> {
     pub fn run_top_down(&self, tokens: &[Token<T>]) -> Option<SyntaxTree<T, N>> {
         let mut tree = SyntaxTree::new();
         let focus = self.root;
-        let focus_node = tree.create_node(focus, None, None);
+        let focus_node = tree.create_node(focus, SpanLoc::zero(), None, None);
 
         let first_token = match tokens.get(0) {
             Some(x) => x,
@@ -138,6 +130,8 @@ impl<T: CustomTokenType, N: GrammarTokenType> Grammar<T, N> {
         data.advance_token(false);
         data.run();
 
+        data.tree.recompute_all_spans(0);
+
         Some(data.tree)
     }
 }
@@ -145,15 +139,18 @@ impl<T: CustomTokenType, N: GrammarTokenType> Grammar<T, N> {
 
 #[cfg(test)]
 mod tests {
+    use std::iter::Cloned;
     use std::slice::Iter;
+
+    use coldpiler_util::Enumerable;
 
     use TestTokenType::{NUMBER, PLUS, SPACE};
 
-    use crate::parser::grammar::{Enumerable, Grammar, GrammarToken};
+    use crate::loc::SpanLoc;
+    use crate::parser::grammar::{Grammar, GrammarToken};
     use crate::parser::grammar::GrammarToken::{NonTerminal, Terminal};
     use crate::parser::tree::SyntaxNode;
-    use crate::scanner::{Token, TokenType};
-    use std::iter::Cloned;
+    use crate::scanner::{Token, TokenLoc};
 
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum TestTokenType {
@@ -174,7 +171,7 @@ mod tests {
         type Iterator = Cloned<Iter<'static, Self>>;
 
         fn index(&self) -> usize {
-            return match self {
+            match self {
                 TGTT::Statement => 0,
                 TGTT::StatementTail => 1,
             }
@@ -195,11 +192,12 @@ mod tests {
                  vec![]]
         ], vec![SPACE]);
 
+        // Original text: 40\n +3
         let tokens = vec![
-            Token { text: "40".to_string(), ttype: TokenType::Custom(NUMBER) },
-            Token { text: "\n ".to_string(), ttype: TokenType::Custom(SPACE) },
-            Token { text: "+".to_string(), ttype: TokenType::Custom(PLUS) },
-            Token { text: "3".to_string(), ttype: TokenType::Custom(NUMBER) },
+            Token { text: TokenLoc::of(0, 0, 0, 0, 1), ttype: NUMBER },
+            Token { text: TokenLoc::of(1, 0, 2, 1, 0), ttype: SPACE },
+            Token { text: TokenLoc::of(2, 1, 1, 1, 1), ttype: PLUS },
+            Token { text: TokenLoc::of(3, 1, 2, 1, 2), ttype: NUMBER },
         ];
 
         let ast = grammar.run_top_down(&tokens).unwrap();
@@ -207,45 +205,52 @@ mod tests {
             parent: None,
             gtype: NonTerminal(TGTT::Statement),
             text: None,
+            span: SpanLoc::of(0, 0, 1, 2),
             children: vec![1, 2]
         }, ast.node(0));
-        assert_eq!(&SyntaxNode {
+        assert_eq!(&SyntaxNode {// 40
             parent: Some(0),
             gtype: Terminal(NUMBER),
-            text: Some("40".to_string()),
+            text: Some(TokenLoc::of(0, 0, 0, 0, 1)),
+            span: SpanLoc::of(0, 0, 0, 1),
             children: vec![]
         }, ast.node(1));
         assert_eq!(&SyntaxNode {
             parent: Some(0),
             gtype: NonTerminal(TGTT::StatementTail),
             text: None,
+            span: SpanLoc::of(1, 1, 1, 2),
             children: vec![3, 4, 5]
         }, ast.node(2));
-        assert_eq!(&SyntaxNode {
+        assert_eq!(&SyntaxNode {// +
             parent: Some(2),
             gtype: Terminal(PLUS),
-            text: Some("+".to_string()),
+            text: Some(TokenLoc::of(2, 1, 1, 1, 1)),
+            span: SpanLoc::of(1, 1, 1, 1),
             children: vec![]
         }, ast.node(3));
-        assert_eq!(&SyntaxNode {
+        assert_eq!(&SyntaxNode {// 3
             parent: Some(2),
             gtype: Terminal(NUMBER),
-            text: Some("3".to_string()),
+            text: Some(TokenLoc::of(3, 1, 2, 1, 2)),
+            span: SpanLoc::of(1, 2, 1, 2),
             children: vec![]
         }, ast.node(4));
         assert_eq!(&SyntaxNode {
             parent: Some(2),
             gtype: NonTerminal(TGTT::StatementTail),
             text: None,
+            span: SpanLoc::of(1, 2, 1, 2),
             children: vec![]
         }, ast.node(5));
 
+        // Original text: 40+1+1
         let tokens = vec![
-            Token { text: "40".to_string(), ttype: TokenType::Custom(NUMBER) },
-            Token { text: "+".to_string(), ttype: TokenType::Custom(PLUS) },
-            Token { text: "1".to_string(), ttype: TokenType::Custom(NUMBER) },
-            Token { text: "+".to_string(), ttype: TokenType::Custom(PLUS) },
-            Token { text: "1".to_string(), ttype: TokenType::Custom(NUMBER) },
+            Token { text: TokenLoc::of(0, 0, 0, 0, 1), ttype: NUMBER },
+            Token { text: TokenLoc::of(1, 0, 2, 0, 2), ttype: PLUS },
+            Token { text: TokenLoc::of(2, 0, 3, 0, 3), ttype: NUMBER },
+            Token { text: TokenLoc::of(1, 0, 4, 0, 4), ttype: PLUS },
+            Token { text: TokenLoc::of(2, 0, 5, 0, 5), ttype: NUMBER },
         ];
 
         let ast = grammar.run_top_down(&tokens).unwrap();

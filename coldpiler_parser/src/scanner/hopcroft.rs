@@ -3,7 +3,7 @@ use std::hash::Hash;
 
 use crate::util::Partition;
 
-use super::scanner::{CustomTokenType, Scanner};
+use super::scanner::{ScannerTokenType, Scanner};
 use std::fmt::{Display, Formatter, Error, Write, Debug};
 use std::cmp::Ordering;
 
@@ -25,7 +25,7 @@ impl Display for FullPartition {
     }
 }
 
-struct HopcroftData<'a, T> where T: CustomTokenType + Hash {
+struct HopcroftData<'a, T> where T: ScannerTokenType + Hash {
     graph: &'a Scanner<T>,
     partitions: PartitionRegistry,
 }
@@ -117,7 +117,7 @@ impl PartialEq for StateBehaviour {
 impl Eq for StateBehaviour {
 }
 
-impl<'a, T> HopcroftData<'a, T>  where T: CustomTokenType + Hash {
+impl<'a, T> HopcroftData<'a, T>  where T: ScannerTokenType + Hash {
     fn new(original: &'a Scanner<T>, partitions: &FullPartition) -> Self {
         HopcroftData {
             graph: original,
@@ -184,7 +184,7 @@ impl<'a, T> HopcroftData<'a, T>  where T: CustomTokenType + Hash {
     }
 }
 
-impl<T: CustomTokenType + Hash> Scanner<T> {
+impl<T: ScannerTokenType + Hash> Scanner<T> {
     pub fn minimize_hopcroft(&self) -> Scanner<T> {
         let mut todo_partition = HopcroftData::partition_by_token(self);
         let mut partition = FullPartition(BTreeSet::new());

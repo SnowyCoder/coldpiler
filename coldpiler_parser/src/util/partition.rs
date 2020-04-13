@@ -11,7 +11,7 @@ impl Partition {
     }
 
     pub fn create_from(set: BTreeSet<u32>) -> Self {
-        Partition(BTreeSet::from(set))
+        Partition(set)
     }
 
     pub fn insert(&mut self, x: u32) {

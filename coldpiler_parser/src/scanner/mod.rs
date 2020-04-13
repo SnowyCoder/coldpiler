@@ -3,9 +3,8 @@ mod nfa;
 mod regex;
 mod scanner;
 
+pub use nfa::{NFA, NonDeterministicFiniteAutomaton};
+pub use regex::{regex_map_to_nfa, regex_to_nfa, RegexReport, RegexReportEntry, RegexReportLevel};
 pub use scanner::{
-    Scanner, Token, TokenType, CustomTokenType,
+    ScannerTokenType, Scanner, Token, TokenLoc
 };
-
-pub use nfa::{NonDeterministicFiniteAutomaton, NFA};
-pub use regex::{regex_to_nfa, regex_map_to_nfa, RegexReport, RegexReportLevel, RegexReportEntry};

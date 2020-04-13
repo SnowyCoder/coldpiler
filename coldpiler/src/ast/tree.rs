@@ -1,6 +1,14 @@
+use coldpiler_parser::scanner::TokenLoc;
+use coldpiler_parser::loc::SpanLoc;
+use std::fmt;
+
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Expr {
+pub struct Expr(pub SpanLoc, pub ExprDetail);
+
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ExprDetail {
     Ident(Identifier),
     Block(Block),
     Lit(Value),
@@ -11,7 +19,7 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Identifier(pub String);
+pub struct Identifier(pub TokenLoc);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Block {
@@ -56,9 +64,30 @@ impl Value {
     }
 }
 
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Unit => write!(f, "()"),
+            Value::I32(x) => write!(f, "{}", x),
+            Value::Bool(x) => write!(f, "{}", x),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Type {
     Unit, I32, Bool,
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Type::Unit => "Unit",
+            Type::I32 => "I32",
+            Type::Bool => "Bool",
+        };
+        f.write_str(s)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

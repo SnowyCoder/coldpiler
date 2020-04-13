@@ -35,7 +35,7 @@ fn generate_token_code(enum_name: Ident, token_names: &[&Ident]) -> proc_macro2:
         }
 
 
-        impl coldpiler_parser::parser::Enumerable for #enum_name {
+        impl coldpiler_util::Enumerable for #enum_name {
             type Iterator = core::iter::Cloned<core::slice::Iter<'static, Self>>;
 
             fn index(&self) -> usize {
@@ -279,9 +279,9 @@ fn generate_parser_code(grammar: &Grammar) -> proc_macro2::TokenStream {
             #create_parser_code
         }
 
-        pub fn tokenize(src: &str) -> std::vec::Vec<coldpiler_parser::scanner::Token<ScannerTokenType>> {
+        pub fn tokenize(trie: &mut coldpiler_util::radix_tree::RadixTree<u8>, src: &str) -> (std::vec::Vec<coldpiler_parser::scanner::Token<ScannerTokenType>>, std::vec::Vec<coldpiler_parser::scanner::TokenLoc>) {
             let dfa = ScannerTokenType::build_dfa();
-            dfa.tokenize(src, 0)
+            dfa.tokenize(trie, src, 0)
             // TODO: use custom tokenizer code
         }
     }

@@ -1,17 +1,10 @@
 use std::fmt::Debug;
 
-use crate::scanner::CustomTokenType;
+use coldpiler_util::Enumerable;
+
+use crate::scanner::ScannerTokenType;
 
 pub type TokenIndex = usize;
-
-
-pub trait Enumerable : Sized + Copy {
-    type Iterator: Iterator<Item = Self> + std::iter::ExactSizeIterator;
-
-    fn index(&self) -> usize;
-
-    fn enumerate() -> Self::Iterator;
-}
 
 pub trait GrammarTokenType : Copy + Debug + Eq + Enumerable {
 }
@@ -38,13 +31,13 @@ pub type GrammarDefinition<T, N> = Vec<GrammarRule<T, N>>;
 /// Terminal tokens are to be matched with Syntax Tree's tokens while non-terminals match types in
 /// the grammar, they might also allow recursion.
 #[derive(Debug)]
-pub struct Grammar<T: CustomTokenType, N: GrammarTokenType> {
+pub struct Grammar<T: ScannerTokenType, N: GrammarTokenType> {
     pub root: GrammarToken<T, N>,
     pub defs: Vec<GrammarDefinition<T, N>>,
     pub ignored: Vec<T>,
 }
 
-impl<T: CustomTokenType, N: GrammarTokenType> Grammar<T, N> {
+impl<T: ScannerTokenType, N: GrammarTokenType> Grammar<T, N> {
     pub fn from_raw(root: GrammarToken<T, N>, defmap: Vec<GrammarDefinition<T, N>>, ignored: Vec<T>) -> Self {
         Grammar {
             root,

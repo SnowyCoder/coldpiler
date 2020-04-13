@@ -1,5 +1,5 @@
 use super::nfa::NFA;
-use super::scanner::CustomTokenType;
+use super::scanner::ScannerTokenType;
 use std::slice::Iter;
 use crate::util::char_range_inclusive;
 
@@ -7,7 +7,7 @@ use crate::util::char_range_inclusive;
 ///! There isn't any hard "algorithm" in here, just some boilerplate code and some good
 ///! conventions.
 
-fn concatenate<T: CustomTokenType>(nfas: &[&NFA<T>]) -> NFA<T> {
+fn concatenate<T: ScannerTokenType>(nfas: &[&NFA<T>]) -> NFA<T> {
     let mut res = NFA::new();
     //res.reserve_nodes(nfas.iter().map(|x| x.node_count()).sum());
 
@@ -32,7 +32,7 @@ fn concatenate<T: CustomTokenType>(nfas: &[&NFA<T>]) -> NFA<T> {
     res
 }
 
-fn or_catenate<T: CustomTokenType>(nfas: &[&NFA<T>], combine_end: bool) -> NFA<T> {
+fn or_catenate<T: ScannerTokenType>(nfas: &[&NFA<T>], combine_end: bool) -> NFA<T> {
     //        -> nfa1 |
     // first |        -> last
     //        -> nfa2 |
@@ -66,13 +66,13 @@ fn or_catenate<T: CustomTokenType>(nfas: &[&NFA<T>], combine_end: bool) -> NFA<T
     res
 }
 
-fn for_repeat<T: CustomTokenType>(nfa: &NFA<T>, times: usize) -> NFA<T> {
+fn for_repeat<T: ScannerTokenType>(nfa: &NFA<T>, times: usize) -> NFA<T> {
     let mut array = Vec::with_capacity(times);
     array.resize(times, nfa);
     concatenate(array.as_slice())
 }
 
-fn star_repeat<T: CustomTokenType>(nfa: &mut NFA<T>) {
+fn star_repeat<T: ScannerTokenType>(nfa: &mut NFA<T>) {
     nfa.add_edge(nfa.node_count() as u32 - 1, 0, None);
 }
 
@@ -98,7 +98,7 @@ impl GroupParseData {
         CounterToken(curr)
     }
 
-    fn transform_finalize<T: CustomTokenType>(self, token: Option<T>, is_last_star: bool) -> NFA<T> {
+    fn transform_finalize<T: ScannerTokenType>(self, token: Option<T>, is_last_star: bool) -> NFA<T> {
         // The parsing method colors each generated nfa with a sequential token id, when the group parsing is done
         // every token is removed expect from the last one that is replaced with the real token, this function does
         // exactly that, iterating every node and transforming its token
@@ -127,7 +127,7 @@ fn split_par<'a>(report: &mut RegexReportWriter, text: &'a str, par_end: char) -
     Ok((subtext, after_text))
 }
 
-fn parse_char<'a, T: CustomTokenType>(report: &mut RegexReportWriter, text: &'a str, token: Option<T>) -> Result<(&'a str, NFA<T>), ()> {
+fn parse_char<'a, T: ScannerTokenType>(report: &mut RegexReportWriter, text: &'a str, token: Option<T>) -> Result<(&'a str, NFA<T>), ()> {
     let first_char = text.chars().next().expect("Cannot parse empty sequence");
     report.visit_char(first_char);
 
@@ -173,18 +173,18 @@ fn parse_char<'a, T: CustomTokenType>(report: &mut RegexReportWriter, text: &'a 
             }
         }
         let nfa_refs: Vec<_> = nfas.iter().collect();
-        return Ok((&text[2..], or_catenate(&nfa_refs, true)))
+        Ok((&text[2..], or_catenate(&nfa_refs, true)))
     } else {
-        return Ok((&text[1..], NFA::from_char(first_char, token)))
+        Ok((&text[1..], NFA::from_char(first_char, token)))
     }
 }
 
-fn parse_char_group<T: CustomTokenType>(report: &mut RegexReportWriter, mut text: &str, token: Option<T>) -> Result<NFA<T>, ()> {
+fn parse_char_group<T: ScannerTokenType>(report: &mut RegexReportWriter, mut text: &str, token: Option<T>) -> Result<NFA<T>, ()> {
     let mut nfas = Vec::new();
     while let Some(first_char) = text.chars().next() {
         if first_char == '-' {
             report.visit_char('-');
-            nfas.push(NFA::from_text(&['-' as u8], token));
+            nfas.push(NFA::from_text(&[b'-'], token));
             text = &text[1..];
             continue
         }
@@ -218,7 +218,7 @@ fn parse_char_group<T: CustomTokenType>(report: &mut RegexReportWriter, mut text
     Ok(res)
 }
 
-fn parse_group<T: CustomTokenType>(report: &mut RegexReportWriter, text: &str, token: Option<T>) -> Result<NFA<T>, ()> {
+fn parse_group<T: ScannerTokenType>(report: &mut RegexReportWriter, text: &str, token: Option<T>) -> Result<NFA<T>, ()> {
     let mut data = GroupParseData {
         nfa: NFA::new(),
         last_nfa: None,
@@ -307,13 +307,13 @@ fn parse_group<T: CustomTokenType>(report: &mut RegexReportWriter, text: &str, t
     Ok(data.transform_finalize(token, is_last_char_star))
 }
 
-pub fn regex_to_nfa<T: CustomTokenType>(report: &mut RegexReport, regex: &str, token: Option<T>) -> Result<NFA<T>, ()> {
+pub fn regex_to_nfa<T: ScannerTokenType>(report: &mut RegexReport, regex: &str, token: Option<T>) -> Result<NFA<T>, ()> {
     let mut rep_writer = report.writer();
     parse_group(&mut rep_writer, regex, token)
 }
 
 pub fn regex_map_to_nfa<T>(report: &mut RegexReport, regex_map: &[(T, &str)]) -> Result<NFA<T>, ()>
-    where T: CustomTokenType {
+    where T: ScannerTokenType {
 
     let nfas: Vec<Result<NFA<T>, ()>> = regex_map.iter()
         .enumerate()
@@ -415,6 +415,7 @@ pub struct RegexReportEntry {
 mod tests {
     use crate::scanner::*;
     use crate::scanner::regex::{RegexReport, RegexReportEntry, RegexReportLevel};
+    use coldpiler_util::radix_tree::RadixTree;
 
     #[test]
     fn test_simple() {
@@ -491,17 +492,18 @@ mod tests {
         assert!(report.is_empty());
         let dfa = nfa.unwrap().to_dfa().minimize_hopcroft();
 
-        assert_eq!(dfa.tokenize("not  \n0 nor 15 and", 0), [
-            Token { text: "not".to_string(), ttype: TokenType::Custom(Not) },
-            Token { text: "  \n".to_string(), ttype: TokenType::Custom(Space) },
-            Token { text: "0".to_string(), ttype: TokenType::Custom(BinaryNumber) },
-            Token { text: " ".to_string(), ttype: TokenType::Custom(Space) },
-            Token { text: "nor".to_string(), ttype: TokenType::Custom(Nor) },
-            Token { text: " ".to_string(), ttype: TokenType::Custom(Space) },
-            Token { text: "15".to_string(), ttype: TokenType::Custom(BinaryNumber) },
-            Token { text: " ".to_string(), ttype: TokenType::Custom(Space) },
-            Token { text: "and".to_string(), ttype: TokenType::Custom(And) },
-        ]);
+        let mut trie = RadixTree::new();
+        assert_eq!(dfa.tokenize(&mut trie, "not  \n0 nor 15 and", 0), (vec![
+            Token { text: TokenLoc::of(trie.get("not").unwrap(),  0, 0, 0, 2), ttype: Not },
+            Token { text: TokenLoc::of(trie.get("  \n").unwrap(), 0, 3, 0, 5), ttype: Space },
+            Token { text: TokenLoc::of(trie.get("0").unwrap(),    1, 0, 1, 0), ttype: BinaryNumber },
+            Token { text: TokenLoc::of(trie.get(" ").unwrap(),    1, 1, 1, 1), ttype: Space },
+            Token { text: TokenLoc::of(trie.get("nor").unwrap(),  1, 2, 1, 4), ttype: Nor },
+            Token { text: TokenLoc::of(trie.get(" ").unwrap(),    1, 5, 1, 5), ttype: Space },
+            Token { text: TokenLoc::of(trie.get("15").unwrap(),   1, 6, 1, 7), ttype: BinaryNumber },
+            Token { text: TokenLoc::of(trie.get(" ").unwrap(),    1, 8, 1, 8), ttype: Space },
+            Token { text: TokenLoc::of(trie.get("and").unwrap(),  1, 9, 1, 11), ttype: And },
+        ], vec![]));
     }
 
     #[test]
@@ -521,7 +523,9 @@ mod tests {
         assert!(report.is_empty());
         let dfa = nfa.unwrap().to_dfa();
 
-        assert_eq!(TokenType::Custom(TestTokenType::B), dfa.tokenize(" \t  \n\t", 0)[0].ttype);
+        let mut trie = RadixTree::new();
+
+        assert_eq!(TestTokenType::B, dfa.tokenize(&mut trie, " \t  \n\t", 0).0[0].ttype);
 
         // Test some obscure bug in hopcroft's split algorithm
         let nfa = regex_map_to_nfa(&mut report, &[
@@ -531,9 +535,9 @@ mod tests {
         assert!(report.is_empty());
         let dfa = nfa.unwrap().to_dfa();
 
-        assert_eq!(TokenType::Custom(TestTokenType::A), dfa.tokenize("var", 0)[0].ttype);
-        assert_eq!(TokenType::Custom(TestTokenType::B), dfa.tokenize("vara", 0)[0].ttype);
-        assert_eq!(TokenType::Custom(TestTokenType::B), dfa.tokenize("k", 0)[0].ttype);
+        assert_eq!(TestTokenType::A, dfa.tokenize(&mut trie, "var", 0).0[0].ttype);
+        assert_eq!(TestTokenType::B, dfa.tokenize(&mut trie, "vara", 0).0[0].ttype);
+        assert_eq!(TestTokenType::B, dfa.tokenize(&mut trie, "k", 0).0[0].ttype);
 
         // Other tests
         let nfa = regex_map_to_nfa(&mut report, &[
@@ -544,9 +548,7 @@ mod tests {
         eprintln!("NFA: {}", nfa);
         let dfa = nfa.to_dfa();
 
-
-        //assert_eq!(TokenType::Custom(TestTokenType::A), dfa.tokenize("var", 0)[0].ttype);
-        assert_eq!(TokenType::Custom(TestTokenType::A), dfa.tokenize("a", 0)[0].ttype);
+        assert_eq!(TestTokenType::A, dfa.tokenize(&mut trie, "a", 0).0[0].ttype);
     }
 
     #[test]

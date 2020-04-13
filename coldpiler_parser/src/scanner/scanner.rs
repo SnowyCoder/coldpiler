@@ -1,32 +1,44 @@
-use crate::scanner::TokenType::{Error, Custom};
 use std::fmt::Debug;
+
+use coldpiler_util::radix_tree::RadixTree;
+
+use crate::loc::SpanLoc;
 use crate::scanner::NFA;
 
-pub trait CustomTokenType : Copy + Debug + Eq + Ord {
+pub trait ScannerTokenType: Copy + Debug + Eq + Ord {
 }
 
-impl<T: Copy + Debug + Eq + Ord> CustomTokenType for T {}
+impl<T: Copy + Debug + Eq + Ord> ScannerTokenType for T {}
 
 #[derive(Clone, Debug)]
-pub struct Scanner<T: CustomTokenType> {
+pub struct Scanner<T: ScannerTokenType> {
     node_count: u32,
     tokens: Vec<Option<T>>,
     node_map: Vec<Option<u32>>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum TokenType<T: CustomTokenType> {
-    Custom(T),
-    Error,
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TokenLoc {
+    pub trie_index: u32,
+    pub span: SpanLoc,
+}
+
+impl TokenLoc {
+    pub fn of(trie_index: u32, span_start_line: u32, span_start_col: u32, span_end_line: u32, span_end_col: u32) -> Self {
+        TokenLoc {
+            trie_index,
+            span: SpanLoc::of(span_start_line, span_start_col, span_end_line, span_end_col),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Token<T: CustomTokenType> {
-    pub text: String,
-    pub ttype: TokenType<T>,
+pub struct Token<T: ScannerTokenType> {
+    pub text: TokenLoc,
+    pub ttype: T,
 }
 
-impl<T: CustomTokenType> Scanner<T> {
+impl<T: ScannerTokenType> Scanner<T> {
     pub fn new(node_count: u32) -> Scanner<T> {
         Scanner {
             node_count,
@@ -36,7 +48,7 @@ impl<T: CustomTokenType> Scanner<T> {
     }
 
     pub fn from_raw(tokens: Vec<Option<T>>, node_map: Vec<Option<u32>>) -> Scanner<T> {
-        assert!(tokens.len() * 256 == node_map.len());
+        assert_eq!(tokens.len() * 256, node_map.len());
         Scanner {
             node_count: tokens.len() as u32,
             tokens, node_map,
@@ -112,15 +124,23 @@ impl<T: CustomTokenType> Scanner<T> {
         state.and_then(|x| self.get_token(x))
     }
 
-    pub fn tokenize(&self, data: &str, init_state: u32) -> Vec<Token<T>> {
+    pub fn tokenize(&self, trie: &mut RadixTree<u8>, data: &str, init_state: u32) -> (Vec<Token<T>>, Vec<TokenLoc>) {
         let bytes = data.as_bytes();
         let mut tokens: Vec<Token<T>> = Vec::new();
+        let mut unrecognized: Vec<TokenLoc> = Vec::new();
 
         let mut token_start_index = 0;
+        let mut token_start_line = 0;
+        let mut token_start_column = 0;
         let mut last_successful_state: Option<u32> = None;
         let mut last_successful_index = 0;
+        let mut last_successful_line = 0;
+        let mut last_successful_column = 0;
 
         let mut index = 0;
+        let mut line = 0;
+        let mut column = 0;
+
         let mut state = init_state;
         while index < bytes.len() {
             // eprintln!("Index: {}->{} {}, {}, last: {} {:?}", token_start_index, index, state, bytes[index], last_successful_index, last_successful_state);
@@ -128,53 +148,118 @@ impl<T: CustomTokenType> Scanner<T> {
                 state = new_state;
                 if self.get_token(state).is_some() {
                     last_successful_index = index;
+                    last_successful_line = line;
+                    last_successful_column = column;
                     last_successful_state = Some(state);
+                }
+
+                if index + 1 < bytes.len() {
+                    // TODO: properly manage multiple byte chars
+                    // TODO: remove code duplitaction
+                    if bytes[index] == b'\n' {
+                        line += 1;
+                        column = 0;
+                    } else {
+                        column += 1;
+                    }
                 }
             } else {
                 // Error, try to backtrack
                 if let Some(backtracked_state) = last_successful_state {
                     index = last_successful_index;
+                    let trie_index = trie.insert(&bytes[token_start_index..=index]);
+
                     tokens.push(Token {
-                        text: data[token_start_index..=index].to_string(),
-                        ttype: Custom(self.get_token(backtracked_state).unwrap())
+                        text: TokenLoc {
+                            trie_index,
+                            span: SpanLoc {
+                                start_line: token_start_line,
+                                start_column: token_start_column,
+                                end_line: last_successful_line,
+                                end_column: last_successful_column,
+                            }
+                        },
+                        ttype: self.get_token(backtracked_state).unwrap(),
                     });
                     state = init_state;
                     last_successful_state = None;
                     last_successful_index = 0;
                     token_start_index = index + 1;
+
+                    line = last_successful_line;
+                    column = last_successful_column;
+                    if bytes[index] == b'\n' {
+                        line += 1;
+                        column = 0;
+                    } else {
+                        column += 1;
+                    }
+
+                    token_start_line = line;
+                    token_start_column = column;
                 } else {
-                    tokens.push(Token {
-                        text: data[token_start_index..=index].to_string(),
-                        ttype: Error
+                    let trie_index = trie.insert(&bytes[token_start_index..=index]);
+                    unrecognized.push(TokenLoc {
+                        trie_index,
+                        span: SpanLoc {
+                            start_line: token_start_line,
+                            start_column: token_start_column,
+                            end_line: line,
+                            end_column: column,
+                        }
                     });
                     token_start_index = index + 1;
-                    state = 0;
+                    if bytes[index] == b'\n' {
+                        line += 1;
+                        column = 0;
+                    } else {
+                        column += 1;
+                    }
+                    token_start_line = line;
+                    token_start_column = column;
+                    state = init_state;
                 }
             }
+
             index += 1;
         }
 
         if token_start_index != bytes.len() {
-            if last_successful_state.is_some() && last_successful_index == index - 1{
-                tokens.push(Token {
-                    text: data[token_start_index..index].to_string(),
-                    ttype: Custom(self.get_token(last_successful_state.unwrap()).unwrap())
-                });
+            let trie_index = trie.insert(&data[token_start_index..index]);
+            let text = TokenLoc {
+                trie_index,
+                span: SpanLoc {
+                    start_line: token_start_line,
+                    start_column: token_start_column,
+                    end_line: line,
+                    end_column: column,
+                },
+            };
+
+            if let Some(last_succ) = last_successful_state {
+                if last_successful_index == index - 1 {
+                    tokens.push(Token {
+                        text,
+                        ttype: self.get_token(last_succ).unwrap()
+                    });
+                } else {
+                    unrecognized.push(text);
+                }
             } else {
-                tokens.push(Token {
-                    text: data[token_start_index..index].to_string(),
-                    ttype: Error
-                });
+                unrecognized.push(text);
             }
         }
 
-        tokens
+        (tokens, unrecognized)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::{Scanner, Token, TokenType};
+    use coldpiler_util::radix_tree::RadixTree;
+
+    use crate::scanner::{Scanner, Token};
+    use crate::scanner::scanner::TokenLoc;
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
     enum TestTokenType {
@@ -189,32 +274,41 @@ mod tests {
     #[test]
     fn basic_test() {
         let mut x = Scanner::new(3);
-        x.add_edge(0, 1, 'a' as u8);
-        x.add_edge(1, 2, 'b' as u8);
+        x.add_edge(0, 1, b'a');
+        x.add_edge(1, 2, b'b');
         x.set_token(2, TestTokenType::AB);
-        let res = x.tokenize("aba", 0);
+
+        let mut trie = RadixTree::new();
+        let (res, err) = x.tokenize(&mut trie, "aba", 0);
         assert_eq!(res, [
-            Token { text: "ab".to_owned(), ttype: TokenType::Custom(TestTokenType::AB) },
-            Token { text: "a".to_owned(), ttype: TokenType::Error }
+            Token { text: TokenLoc::of(trie.get("ab").unwrap(), 0, 0, 0, 1), ttype: TestTokenType::AB },
         ]);
+        assert_eq!(err, [
+            TokenLoc::of(trie.get("a").unwrap(), 0, 2, 0, 2)
+        ])
     }
 
     #[test]
     fn test_2() {
         let mut x = Scanner::new(6);
-        x.add_edge(0, 1, 'a' as u8);
-        x.add_edge(1, 2, 'b' as u8);
-        x.add_edge(2, 3, 'a' as u8);
-        x.add_edge(3, 4, 'b' as u8);
-        x.add_edge(4, 5, 'a' as u8);
+        x.add_edge(0, 1, b'a');
+        x.add_edge(1, 2, b'b');
+        x.add_edge(2, 3, b'a');
+        x.add_edge(3, 4, b'b');
+        x.add_edge(4, 5, b'a');
         x.set_token(2, TestTokenType::AB);
         x.set_token(5, TestTokenType::ABABA);
-        let res = x.tokenize("abadababa", 0);// ababa odoru akachan ningen
+
+        let mut trie = RadixTree::new();
+        let (res, err) = x.tokenize(&mut trie, "abadababa", 0);// ababa odoru akachan ningen
         assert_eq!(res, [
-            Token { text: "ab".to_owned(), ttype: TokenType::Custom(TestTokenType::AB) },
-            Token { text: "ad".to_owned(), ttype: TokenType::Error },
-            Token { text: "ababa".to_owned(), ttype: TokenType::Custom(TestTokenType::ABABA) }
+            Token { text: TokenLoc::of(trie.get("ab").unwrap(), 0, 0, 0, 1), ttype: TestTokenType::AB },
+            // Error: ad
+            Token { text: TokenLoc::of(trie.get("ababa").unwrap(), 0, 4, 0, 8), ttype: TestTokenType::ABABA }
         ]);
+        assert_eq!(err, [
+            TokenLoc::of(trie.get("ad").unwrap(), 0, 2, 0, 3)
+        ])
     }
 
     #[test]
@@ -229,29 +323,31 @@ mod tests {
         // 0 -n-> 1 |
         //          -e-> 4 -w-> 5|
         let mut x = Scanner::new(6);
-        x.add_edge(0, 1, 'n' as u8);
-        x.add_edge(1, 2, 'o' as u8);
-        x.add_edge(2, 3, 't' as u8);
-        x.add_edge(1, 4, 'e' as u8);
-        x.add_edge(4, 5, 'w' as u8);
+        x.add_edge(0, 1, b'n');
+        x.add_edge(1, 2, b'o');
+        x.add_edge(2, 3, b't');
+        x.add_edge(1, 4, b'e');
+        x.add_edge(4, 5, b'w');
         x.set_token(3, TestTokenType::NOT);
         x.set_token(5, TestTokenType::NEW);
 
-        assert_eq!(x.tokenize("not", 0), [
-            Token { text: "not".to_owned(), ttype: TokenType::Custom(TestTokenType::NOT) }
-        ]);
+        let mut trie = RadixTree::new();
 
-        assert_eq!(x.tokenize("new", 0), [
-            Token { text: "new".to_owned(), ttype: TokenType::Custom(TestTokenType::NEW) }
-        ]);
+        assert_eq!(x.tokenize(&mut trie, "not", 0), (vec![
+            Token { text: TokenLoc::of(trie.get("not").unwrap(), 0, 0, 0, 2), ttype: TestTokenType::NOT }
+        ], vec![]));
 
-        assert_eq!(x.tokenize("now", 0), [
-            Token { text: "now".to_owned(), ttype: TokenType::Error }
-        ]);
+        assert_eq!(x.tokenize(&mut trie, "new", 0), (vec![
+            Token { text: TokenLoc::of(trie.get("new").unwrap(), 0, 0, 0, 2), ttype: TestTokenType::NEW }
+        ], vec![]));
 
-        assert_eq!(x.tokenize("no", 0), [
-            Token { text: "no".to_owned(), ttype: TokenType::Error }
-        ]);
+        assert_eq!(x.tokenize(&mut trie, "now", 0), (vec![], vec![
+            TokenLoc::of(trie.get("now").unwrap(), 0, 0, 0, 2)
+        ]));
+
+        assert_eq!(x.tokenize(&mut trie, "no", 0), (vec![], vec![
+            TokenLoc::of(trie.get("no").unwrap(), 0, 0, 0, 1)
+        ]));
     }
 }
 
