@@ -27,6 +27,11 @@ impl SpanLoc {
         self.end_line = el;
         self.end_column = ec;
     }
+
+    pub fn just_after(&self) -> SpanLoc {
+        SpanLoc::of(self.end_line, self.end_column,
+                    self.end_line, self.end_column)
+    }
 }
 
 

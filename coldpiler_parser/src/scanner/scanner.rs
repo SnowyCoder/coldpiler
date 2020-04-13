@@ -32,7 +32,7 @@ impl TokenLoc {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Token<T: ScannerTokenType> {
     pub text: TokenLoc,
     pub ttype: T,

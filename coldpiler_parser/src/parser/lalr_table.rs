@@ -5,7 +5,7 @@ use std::hash::Hash;
 
 use coldpiler_util::Enumerable;
 
-use crate::parser::{Grammar, GrammarToken, GrammarTokenType, SyntaxTree};
+use crate::parser::{Grammar, GrammarToken, GrammarTokenType, SyntaxTree, ParsingError};
 use crate::parser::grammar::GrammarRuleIndex;
 use crate::scanner::{ScannerTokenType, Token};
 use crate::util::{index_twice, IndexTwice};
@@ -228,7 +228,24 @@ impl<T: ScannerTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> 
         next_index
     }
 
-    pub fn parse(&self, tokens: &[Token<T>]) -> SyntaxTree<T, N> {
+    pub fn find_possible_tokens(&self, state: u32) -> Vec<Option<T>> {
+        let mut res = Vec::new();
+        for x in T::enumerate() {
+            match self.get_action(state, Some(x)) {
+                Action::Reject => {},
+                _ => {
+                    res.push(Some(x))
+                }
+            }
+        }
+        match self.get_action(state, None) {
+            Action::Reject => {},
+            _ => res.push(None)
+        }
+        res
+    }
+
+    pub fn parse(&self, tokens: &[Token<T>]) -> Result<SyntaxTree<T, N>, ParsingError<T>> {
         // This link: http://lambda.uta.edu/cse5317/notes/node18.html while short helped me
         // understand how and why this works
         let mut tree = SyntaxTree::new();
@@ -285,8 +302,19 @@ impl<T: ScannerTokenType + Enumerable + 'static, N: GrammarTokenType + 'static> 
                     // childrens).
                     stack.push((new_state, reduced_node));
                 },
-                Action::Accept => return tree,
-                Action::Reject => panic!("Input rejected on index {} (tk: {:?})", next_index, lookahead),
+                Action::Accept => return Ok(tree),
+                Action::Reject => {
+                    //panic!("Input rejected on index {} (tk: {:?})", next_index, lookahead)
+                    return Err(ParsingError {
+                        token: lookahead.map(|x| x.ttype),
+                        token_loc: lookahead.map(|x| x.text.span)
+                            .unwrap_or_else(|| {
+                                tokens.last()
+                                    .map_or_else(SpanLoc::zero, |x| x.text.span.just_after())
+                            }),
+                        expected: self.find_possible_tokens(top_state),
+                    })
+                },
             }
         }
     }

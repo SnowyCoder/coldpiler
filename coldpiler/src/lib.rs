@@ -1,4 +1,12 @@
 use coldpiler_codegen::coldpile;
+use coldpiler_parser::scanner::{Token, TokenLoc};
+
+use lang::*;
+
+use crate::ast::parse::SyntaxTree;
+use crate::ast::Value;
+use crate::context::{Context, TextProvider};
+use crate::interpret::SymbolTable;
 
 mod context;
 mod error;
@@ -40,32 +48,7 @@ lang = {
 }
 );
 
-use lang::*;
-use crate::ast::Value;
-use coldpiler_parser::scanner::{Token, TokenLoc};
-use crate::context::{Context, TextProvider};
-use crate::error::{CompilationError, ErrorLoc};
-use crate::interpret::SymbolTable;
-
 struct TokenizationError(TokenLoc);
-
-impl CompilationError for TokenizationError {
-    fn error_type(&self) -> String {
-        "Token not recognized".to_owned()
-    }
-
-    fn loc(&self) -> ErrorLoc {
-        ErrorLoc::SingleLocation(self.0.span)
-    }
-
-    fn summarize(&self) -> String {
-        "Unexpected char".to_owned()
-    }
-
-    fn description(&self) -> String {
-        "Cannot recognize any token".to_owned()
-    }
-}
 
 pub fn run_tokenize(context: &mut Context) -> Result<Vec<Token<ScannerTokenType>>, ()> {
     let content = context.source.read_all();
@@ -81,13 +64,21 @@ pub fn run_tokenize(context: &mut Context) -> Result<Vec<Token<ScannerTokenType>
     }
 }
 
+pub fn run_parse(context: &mut Context, tokens: Vec<Token<ScannerTokenType>>) -> Result<SyntaxTree, ()> {
+    match create_shift_parser().parse(&tokens) {
+        Ok(x) => Ok(x),
+        Err(x) => {
+            context.print_error(&x);
+            Err(())
+        }
+    }
+}
+
 pub fn run(content: String) -> Result<Value, ()> {
     let mut context = Context::new(TextProvider::Plain(content));
-
-    let parser = create_shift_parser();
     let tokens = run_tokenize(&mut context)?;
     //println!("{:?}", tokens);
-    let st = parser.parse(&tokens);
+    let st = run_parse(&mut context, tokens)?;
     let ast = ast::parse::build_main(&context, &st);
     let ret = interpret::exec(SymbolTable::new(&context), &ast)?;
 
