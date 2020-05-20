@@ -1,20 +1,36 @@
-use coldpiler_util::radix_tree::RadixTree;
-use std::path::PathBuf;
 use std::fs::File;
 use std::io::Read;
-use crate::error::{ErrorLoc, CompilationError};
+use std::path::PathBuf;
+
+use coldpiler_util::radix_tree::RadixTree;
+
+use crate::ast::{BuiltinFunction, CommonIdentBank};
+use crate::error::{CompilationError, ErrorLoc};
+use crate::symbol_table::SymbolTable;
+
+pub type TokenId = u32;
 
 #[derive(Clone)]
 pub struct Context {
     pub trie: RadixTree<u8>,
+    pub sym_table: SymbolTable,
     pub source: TextProvider,
+    pub bank: CommonIdentBank,
 }
 
 impl Context {
     pub fn new(source: TextProvider) -> Context {
+        let mut trie = RadixTree::new();
+        let bank = CommonIdentBank::create(&mut trie);
+
+        let mut sym_table = SymbolTable::new();
+        BuiltinFunction::register_all(&bank, &mut sym_table);
+
         Context {
-            trie: RadixTree::new(),
-            source
+            trie,
+            sym_table,
+            source,
+            bank
         }
     }
 

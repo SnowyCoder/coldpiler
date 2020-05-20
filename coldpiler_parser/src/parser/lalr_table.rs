@@ -504,6 +504,10 @@ impl<'a, T, N> DfaBuildData<'a, T, N> where T: ScannerTokenType + Enumerable + H
                     let rules = &self.grammar.defs[x.index()];
                     for rule in rules {
                         // TODO: resolve recursion (specifically left recursion)
+                        // How can I trigger this recursion?
+                        // Found out you can by trying to compile this grammar:
+                        // <A> = <B>
+                        // <B> = <A> <B>
                         let mut rule_tks = self.first(rule);
                         can_be_0 |= rule_tks.remove(&None);
                         res.extend(rule_tks);
@@ -751,7 +755,7 @@ mod tests {
             Token { text: TokenLoc::of(1, 0, 2, 0, 2), ttype: CLOSE },
             Token { text: TokenLoc::of(1, 0, 3, 0, 3), ttype: CLOSE },
         ];
-        let tree = table.parse(&tokens);
+        let tree = table.parse(&tokens).unwrap();
         assert_eq!(SyntaxTree::from_nodes_unchecked(vec![
             SyntaxNode { parent: Some(5), gtype: T(OPEN), text: Some(TokenLoc::of(0, 0, 0, 0, 0)), span: SpanLoc::of(0, 0, 0, 0), children: vec![] },
             SyntaxNode { parent: Some(3), gtype: T(OPEN), text: Some(TokenLoc::of(0, 0, 1, 0, 1)), span: SpanLoc::of(0, 1, 0, 1), children: vec![] },
@@ -832,7 +836,7 @@ mod tests {
             SyntaxNode { parent: Some(2), gtype: T(A), text: Some(TokenLoc::of(0, 0, 0, 0, 0)), span: SpanLoc::of(0, 0, 0, 0), children: vec![] },
             SyntaxNode { parent: Some(2), gtype: T(B), text: Some(TokenLoc::of(1, 0, 1, 0, 1)), span: SpanLoc::of(0, 1, 0, 1), children: vec![] },
             SyntaxNode { parent: None, gtype: NT(X), text: None, span: SpanLoc::of(0, 0, 0, 1), children: vec![0, 1] },
-        ]), tree);
+        ]), tree.unwrap());
     }
 
 
@@ -906,5 +910,176 @@ mod tests {
         ];
         let tree = table.parse(&tokens);
         eprintln!("{:?}", tree);
+    }
+
+    #[test]
+    fn fking_long_test() {
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        enum TestTokenType {
+            Eq, Var, If, Else, Fun, BoolLiteral, NumberLiteral, Identifier, ExprSeparator, OpenBrack, CloseBrack, OpenPhar, ClosePhar, Colon, Comma, Space
+        }
+
+        impl Enumerable for TestTokenType {
+            type Iterator = Cloned<Iter<'static, Self>>;
+
+            fn index(&self) -> usize {
+                use TestTokenType::*;
+                match self {
+                    Eq => 0,
+                    Var => 1,
+                    If => 2,
+                    Else => 3,
+                    Fun => 4,
+                    BoolLiteral => 5,
+                    NumberLiteral => 6,
+                    Identifier => 7,
+                    ExprSeparator => 8,
+                    OpenBrack => 9,
+                    CloseBrack => 10,
+                    OpenPhar => 11,
+                    ClosePhar => 12,
+                    Colon => 13,
+                    Comma => 14,
+                    Space => 15,
+                }
+            }
+
+            fn enumerate() -> Self::Iterator {
+                use TestTokenType::*;
+                static TYPES: [TestTokenType; 16] = [Eq, Var, If, Else, Fun, BoolLiteral, NumberLiteral, Identifier, ExprSeparator, OpenBrack, CloseBrack, OpenPhar, ClosePhar, Colon, Comma, Space];
+                TYPES.iter().cloned()
+            }
+        }
+
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+        enum TestGrammarTokenType {
+            Program, FunctionDeclaration, FunctionArgsDeclaration, FunctionArgsDeclarationEntry, FunctionReturn, Block,
+            BlockEntry, ExprOrDecl, Declaration, Expr, ExprOp, ExprBase, Assign, IfExpr, IfTail, FunctionCall,
+            FunctionCallArgs, FunctionCallArgsEntry, Lit
+        }
+
+        type TGTT = TestGrammarTokenType;
+
+        impl Enumerable for TestGrammarTokenType {
+            type Iterator = Cloned<Iter<'static, Self>>;
+
+            fn index(&self) -> usize {
+                use TestGrammarTokenType::*;
+                match self {
+                    Program => 0,
+                    FunctionDeclaration => 1,
+                    FunctionArgsDeclaration => 2,
+                    FunctionArgsDeclarationEntry => 3,
+                    FunctionReturn => 4,
+                    Block => 5,
+                    BlockEntry => 6,
+                    ExprOrDecl => 7,
+                    Declaration => 8,
+                    Expr => 9,
+                    ExprOp => 10,
+                    ExprBase => 11,
+                    Assign => 12,
+                    IfExpr => 13,
+                    IfTail => 14,
+                    FunctionCall => 15,
+                    FunctionCallArgs => 16,
+                    FunctionCallArgsEntry => 17,
+                    Lit => 18,
+                }
+            }
+
+            fn enumerate() -> Self::Iterator {
+                use TestGrammarTokenType::*;
+
+                static TYPES: [TGTT; 19] = [Program, FunctionDeclaration, FunctionArgsDeclaration, FunctionArgsDeclarationEntry, FunctionReturn, Block,
+                    BlockEntry, ExprOrDecl, Declaration, Expr, ExprOp, ExprBase, Assign, IfExpr, IfTail, FunctionCall,
+                    FunctionCallArgs, FunctionCallArgsEntry, Lit];
+                TYPES.iter().cloned()
+            }
+        }
+
+        use GrammarToken::Terminal as T;
+        use GrammarToken::NonTerminal as NT;
+        use TestTokenType::*;
+        use TestGrammarTokenType::*;
+        let grammar = Grammar::from_raw(
+            NT(Program),
+            vec![
+                vec![
+                    vec![NT(FunctionDeclaration), NT(Program)]
+                ],
+                vec![
+                    vec![T(Fun), T(Identifier), NT(FunctionArgsDeclaration), NT(FunctionReturn), NT(Block)]
+                ],
+                vec![
+                    vec![T(OpenPhar), T(ClosePhar)],
+                    vec![T(OpenPhar), NT(FunctionArgsDeclarationEntry), T(ClosePhar)]
+                ],
+                vec![
+                    vec![T(Identifier), T(Colon), T(Identifier)],
+                    vec![T(Identifier), T(Colon), T(Identifier), T(Comma), NT(FunctionArgsDeclarationEntry)]
+                ],
+                vec![
+                    vec![T(Colon), T(Identifier)],
+                    vec![]
+                ],
+                vec![
+                    vec![T(OpenBrack), NT(BlockEntry), T(CloseBrack)]
+                ],
+                vec![
+                    vec![NT(ExprOrDecl)],
+                    vec![NT(ExprOrDecl), T(ExprSeparator), NT(BlockEntry)]
+                ],
+                vec![
+                    vec![NT(Expr)],
+                    vec![NT(Declaration)],
+                    vec![]
+                ],
+                vec![
+                    vec![T(Var), T(Identifier), T(Eq), NT(Expr)]
+                ],
+                vec![
+                    vec![NT(ExprOp)],
+                    vec![T(Identifier), T(Eq), NT(Expr)]
+                ],
+                vec![
+                    vec![NT(ExprBase)],
+                    vec![NT(ExprOp), T(Identifier), NT(ExprBase)]
+                ],
+                vec![
+                    vec![T(Identifier)], vec![NT(Block)], vec![NT(Lit)], vec![NT(IfExpr)], vec![NT(FunctionCall)]
+                ],
+                vec![
+                    vec![T(Identifier), T(Eq), NT(Expr)]
+                ],
+                vec![
+                    vec![T(If), NT(Expr), NT(Block), NT(IfTail)]
+                ],
+                vec![
+                    vec![T(Else), NT(Block)], vec![]
+                ],
+                vec![
+                    vec![T(Identifier), T(OpenPhar), NT(FunctionCallArgs), T(ClosePhar)]
+                ],
+                vec![
+                    vec![T(OpenPhar), T(ClosePhar)],
+                    vec![T(OpenPhar), NT(FunctionCallArgsEntry), T(ClosePhar)]
+                ],
+                vec![
+                    vec![NT(Expr)], vec!
+                    [NT(Expr), NT(FunctionCallArgsEntry)]
+                ],
+                vec![
+                    vec![T(NumberLiteral)],
+                    vec![T(BoolLiteral)]
+                ]
+            ],
+            vec![Space]
+        );
+        // Grammar is:
+        // S ::= Number | Number Plus <S>
+
+        let table = grammar.to_ll_table().unwrap();
+        //eprintln!("{:?}", table);
     }
 }
