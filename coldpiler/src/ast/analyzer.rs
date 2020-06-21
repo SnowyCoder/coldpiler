@@ -138,6 +138,7 @@ pub fn analyze_expr(ctx: &mut Ctx, expr_id: ExprId) -> Type {
                 }
                 ctx.with_new_level(|ctx| analyze_expr(ctx, x.then))
             }
+            let loc = expr.loc;
             let x = x.clone();
 
             let mut block_iter = x.blocks.iter();
@@ -159,6 +160,8 @@ pub fn analyze_expr(ctx: &mut Ctx, expr_id: ExprId) -> Type {
                     let tail_loc = ctx.table.exprs[tail_id].loc;
                     ctx.errors.push(AnalyzeError::MismatchedType(tail_loc, first_type, t));
                 }
+            } else if first_type != Type::Unit {
+                ctx.errors.push(AnalyzeError::MismatchedType(loc, first_type, Type::Unit))
             }
             first_type
         },

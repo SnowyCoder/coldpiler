@@ -8,7 +8,9 @@ fun main(): I32 {
     println(a + b - 3);
     if b > 5 {
         println(42);
-	//prttry(b);
+	prttry(b);
         16
+    } else {
+        10
     }
 }

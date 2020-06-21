@@ -21,4 +21,3 @@ to comprehend what I've done.
 ### Future
 I plan to transform this project into a real compiler for my own language.
 The plan is not to use any dependency and to write any nontrivial algorithm/data structure myself.
-I think I'll provide compilation to RISC-V or WebAssembly (still to decide), and maybe interpretation.

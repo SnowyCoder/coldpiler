@@ -25,26 +25,31 @@ operations (and their priorities), create loop-like functions and so.
 
 ## Current Language
 ```
-<Program> = Fun Main <Block>;
+<Program> = <FunctionDeclaration> <Program> | ;
+<FunctionDeclaration> = Fun Identifier <FunctionArgsDeclaration> <FunctionReturn> <Block>;
+<FunctionArgsDeclaration> = OpenPhar ClosePhar | OpenPhar <FunctionArgsDeclarationEntry> ClosePhar;
+<FunctionArgsDeclarationEntry> = Identifier Colon Identifier | Identifier Colon Identifier Comma <FunctionArgsDeclarationEntry>;
+<FunctionReturn> = Colon Identifier | ;
 <Block> = OpenBrack <BlockEntry> CloseBrack;
 <BlockEntry> = <ExprOrDecl> | <ExprOrDecl> ExprSeparator <BlockEntry>;
 <ExprOrDecl> = <Expr> | <Declaration> | ;
 <Declaration> = Var Identifier Eq <Expr>;
+// Differentiate Expr, ExprOp and ExprBase to disambiguate
 <Expr> = <ExprOp> | Identifier Eq <Expr>;
 <ExprOp> = <ExprBase> | <ExprOp> Identifier <ExprBase>;
-<ExprBase> = Identifier | <Block> | <Lit> | <IfExpr> | <PrintExpr>;
+<ExprBase> = Identifier | <Block> | <Lit> | <IfExpr> | <FunctionCall>;
 <Assign> = Identifier Eq <Expr>;
 <IfExpr> = If <Expr> <Block> <IfTail>;
 <IfTail> = Else <Block> | ;
-<PrintExpr> = Println OpenPhar <Expr> ClosePhar;
+<FunctionCall> = Identifier <FunctionCallArgs>;
+<FunctionCallArgs> = OpenPhar <FunctionCallArgsEntry> ClosePhar | OpenPhar ClosePhar;
+<FunctionCallArgsEntry> = <Expr> | <Expr> Comma <FunctionCallArgsEntry>;
 <Lit> = NumberLiteral | BoolLiteral;
 Eq = "="
 Var = "var"
 If = "if"
 Else = "else"
 Fun = "fun"
-Main = "main"
-Println = "println"
 BoolLiteral = "true|false"
 NumberLiteral = "0b[01]+|0x[0-9a-fA-F]+|0o[0-7]+|[0-9]+"
 Identifier = r#"[a-zA-Z][0-9a-zA-Z_]*|[-+*~/!|^&<>]"#
@@ -53,18 +58,27 @@ OpenBrack = "[{]"
 CloseBrack = "}"
 OpenPhar = "[(]"
 ClosePhar = ")"
+Colon = ":"
+Comma = ","
 Space = "[\\s]+" @ignore
 ```
 
 Example program:
 ```
-fun main {
+fun prttry(a: I32) {
+    println(a + 2);
+}
+
+fun main(): I32 {
   var a = 2;
   var b = 3 + 1 * 2;
   println(a + b * 3);
   if b > 5 {
     println(42);
+    prttry(b);
     16
+  } else {
+    10
   }
 }
 ```
@@ -75,7 +89,7 @@ This uses rust's idea that the last expression result is returned (if no ; is
 
 ## Improvements
 - Operation precedence (`2+3*2` = 8, not 10)
-- Other functions besides main (and generalize the built-in ones)
-- Static analysis
-- Put the input tokens in a Trie (to save up memory and speed up comparisons)
-- Real compilation
+- Better register allocator (maybe a SSA one?)
+- SSA and local optimizations
+- Loops
+- Structures/classes
