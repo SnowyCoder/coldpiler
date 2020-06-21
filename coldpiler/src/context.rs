@@ -6,14 +6,14 @@ use coldpiler_util::radix_tree::RadixTree;
 
 use crate::ast::{BuiltinFunction, CommonIdentBank};
 use crate::error::{CompilationError, ErrorLoc};
-use crate::symbol_table::SymbolTable;
+use crate::ast::ast_data::AstData;
 
 pub type TokenId = u32;
 
 #[derive(Clone)]
 pub struct Context {
     pub trie: RadixTree<u8>,
-    pub sym_table: SymbolTable,
+    pub ast: AstData,
     pub source: TextProvider,
     pub bank: CommonIdentBank,
 }
@@ -23,12 +23,12 @@ impl Context {
         let mut trie = RadixTree::new();
         let bank = CommonIdentBank::create(&mut trie);
 
-        let mut sym_table = SymbolTable::new();
-        BuiltinFunction::register_all(&bank, &mut sym_table);
+        let mut ast = AstData::new();
+        BuiltinFunction::register_all(&bank, &mut ast);
 
         Context {
             trie,
-            sym_table,
+            ast,
             source,
             bank
         }

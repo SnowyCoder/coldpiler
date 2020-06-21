@@ -4,7 +4,7 @@ use coldpiler_parser::scanner::TokenLoc;
 
 use crate::ast::*;
 use crate::context::Context;
-use crate::symbol_table::{FunctionId, LevelId};
+use crate::ast::ast_data::{FunctionId, LevelId};
 
 pub fn exec_function_builtin(fun: BuiltinFunction, args: Vec<Value>) -> Value {
     match fun {
@@ -33,11 +33,11 @@ pub fn exec_function_builtin(fun: BuiltinFunction, args: Vec<Value>) -> Value {
 }
 
 pub fn exec_function(table: &mut SymbolTable, fun: FunctionId, args: Vec<Value>)  -> Value {
-    match &table.context.sym_table.functions[fun] {
+    match &table.context.ast.functions[fun] {
         FunctionDefinition::Builtin(x) => exec_function_builtin(*x, args),
         FunctionDefinition::Custom(fun) => {
             let mut nt = SymbolTable::new(table.context);
-            let level = table.context.sym_table.exprs[fun.body].level;
+            let level = table.context.ast.exprs[fun.body].level;
             for (atype, aval) in fun.args.iter().zip(args) {
                 nt.assign(level, (atype.0).0, aval);
             }
@@ -61,7 +61,7 @@ pub fn exec_if(table: &mut SymbolTable, expr: &IfExpr) -> Value {
 }
 
 pub fn exec_expr(mut table: &mut SymbolTable, expr_id: ExprId) -> Value {
-    let expr = &table.context.sym_table.exprs[expr_id];
+    let expr = &table.context.ast.exprs[expr_id];
     match &expr.details {
         ExprDetail::Var(x) => table.query(expr.level, x.0).clone(),
         ExprDetail::Block(b) => {
@@ -106,13 +106,13 @@ impl<'a> SymbolTable<'a> {
     }
 
     fn assign(&mut self, level: LevelId, rhs: TokenLoc, val: Value) -> Value {
-        let level = self.context.sym_table.search_variable(level, rhs.trie_index).unwrap().level;
+        let level = self.context.ast.search_variable(level, rhs.trie_index).unwrap().level;
         self.table.insert((level, rhs.trie_index), val.clone());
         val
     }
 
     fn query(&self, level: LevelId, name: TokenLoc) -> &Value {
-        let level = self.context.sym_table.search_variable(level, name.trie_index).unwrap().level;
+        let level = self.context.ast.search_variable(level, name.trie_index).unwrap().level;
         self.table.get(&(level, name.trie_index)).unwrap()
     }
 }

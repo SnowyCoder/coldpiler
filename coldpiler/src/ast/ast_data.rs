@@ -11,7 +11,7 @@ pub type FunctionId = usize;
 pub type LevelId = usize;
 
 #[derive(Clone)]
-pub struct SymbolTable {
+pub struct AstData {
     pub functions: Vec<FunctionDefinition>,
     functions_by_signature: HashMap<FunctionSignature, FunctionId>,
 
@@ -21,9 +21,9 @@ pub struct SymbolTable {
     level_parent: Vec<LevelId>,
 }
 
-impl SymbolTable {
+impl AstData {
     pub fn new() -> Self {
-        SymbolTable {
+        AstData {
             functions: Vec::new(),
             functions_by_signature: HashMap::new(),
             exprs: Vec::new(),

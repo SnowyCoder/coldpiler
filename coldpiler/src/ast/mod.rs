@@ -1,4 +1,5 @@
 pub mod analyzer;
+pub mod ast_data;
 pub mod parse;
 mod tree;
 

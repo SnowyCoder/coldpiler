@@ -10,8 +10,10 @@ use crate::context::{Context, TextProvider};
 mod context;
 mod error;
 mod ast;
+mod register_allocator;
+mod tac;
+mod riscv;
 mod interpret;
-mod symbol_table;
 
 coldpile!(
 lang = {
@@ -81,7 +83,7 @@ pub fn run_parse(context: &mut Context, tokens: Vec<Token<ScannerTokenType>>) ->
 }
 
 pub fn run_analyze(context: &mut Context) -> Result<(), ()> {
-    let errors = ast::analyzer::analyze_all(&mut context.sym_table);
+    let errors = ast::analyzer::analyze_all(&mut context.ast);
     if !errors.is_empty() {
         for error in errors {
             context.print_error(&error);
@@ -90,7 +92,6 @@ pub fn run_analyze(context: &mut Context) -> Result<(), ()> {
     } else {
         Ok(())
     }
-
 }
 
 pub fn print(tree: &SyntaxTree, nodei: usize) {
@@ -111,15 +112,30 @@ pub fn run(content: String) -> Result<Value, ()> {
 
     run_analyze(&mut context)?;
 
-    let main = context.sym_table.find_function(&FunctionSignature::of(context.bank.main, Vec::new())).expect("Cannot find main");
-    let main = context.sym_table.get_function(main);
+    let main_id = context.ast.find_function(&FunctionSignature::of(context.bank.main, Vec::new())).expect("Cannot find main");
+    let mut tac_prog = tac::ast_program_to_tac(&mut context.ast, main_id);
 
-    let main = match main {
-        FunctionDefinition::Custom(x) => x,
-        FunctionDefinition::Builtin(_) => unreachable!(),
-    };
+    for x in tac_prog.funs.iter() {
+        eprintln!("{}", x);
+    }
+    /*for f in tac_prog.funs.iter_mut() {
+        f.convert_out_of_ssa();
+    }*/
 
-    let ret = interpret::exec_expr(&mut interpret::SymbolTable::new(&context), main.body);
+    let riscv = riscv::emit_program(&tac_prog, &context.ast);
+    for (index, fun) in riscv.iter().enumerate() {
+        let name = context.ast.functions.iter().find_map(|f| match f {
+            FunctionDefinition::Builtin(_) => None,
+            FunctionDefinition::Custom(x) => if x.tac_id == index { Some(x) } else { None },
+        }).unwrap().name;
+        let name = context.get_text(name.0.trie_index);
+        eprintln!("{}: ", name);
+        //eprintln!("{:?}", fun);
+        for i in fun.iter().copied() {
+            eprintln!("\t{}\t", i.encode().to_str());
+        }
+    }
+    //let ret = interpret::exec_expr(&mut interpret::SymbolTable::new(&context), main.body);
 
-    Ok(ret)
+    Ok(Value::Unit)
 }

@@ -112,7 +112,7 @@ fn build_expr_base(ctx: &mut Ctx, node: &SyntaxNode) -> ExprId {
         GrammarToken::Terminal(T::Identifier) =>  ExprDetail::Var(build_ident(ctx, first_child)),
         _ => unreachable!(),
     };
-    ctx.context.sym_table.register_expr(Expr {
+    ctx.context.ast.register_expr(Expr {
         loc: node.span,
         level: 0,
         details,
@@ -132,7 +132,7 @@ fn build_expr_op(ctx: &mut Ctx, node: &SyntaxNode) -> ExprId {
                 args: vec![lhs, rhs],
                 function_id: None
             };
-            ctx.context.sym_table.register_expr(Expr {
+            ctx.context.ast.register_expr(Expr {
                 loc: node.span,
                 level: 0,
                 details: ExprDetail::FunctionCall(fun),
@@ -160,7 +160,7 @@ fn build_expr(ctx: &mut Ctx, node: &SyntaxNode) -> ExprId {
                 }),
                 res_type: None,
             };
-            ctx.context.sym_table.register_expr(expr)
+            ctx.context.ast.register_expr(expr)
         },
         GrammarToken::NonTerminal(NT::ExprOp) => build_expr_op(ctx, first_child),
         _ => unreachable!(),
@@ -206,7 +206,7 @@ fn build_block(ctx: &mut Ctx, node: &SyntaxNode) -> Block {
         let child = expr_or_decl.children.get(0)
             .map(|x| ctx.tree.node(*x));
         let entry = match child.map(|x| x.gtype) {
-            None => ctx.context.sym_table.register_expr(Expr {
+            None => ctx.context.ast.register_expr(Expr {
                 loc: expr_or_decl.span,
                 level: 0,
                 details: ExprDetail::Lit(Value::Unit),
@@ -220,7 +220,7 @@ fn build_block(ctx: &mut Ctx, node: &SyntaxNode) -> Block {
                     details: ExprDetail::Decl(build_decl(ctx, child.unwrap())),
                     res_type: None
                 };
-                ctx.context.sym_table.register_expr(expr)
+                ctx.context.ast.register_expr(expr)
             },
             _ => unreachable!(),
         };
@@ -243,7 +243,7 @@ fn build_block_expr(ctx: &mut Ctx, node: &SyntaxNode) -> ExprId {
         details: ExprDetail::Block(build_block(ctx, node)),
         res_type: None
     };
-    ctx.context.sym_table.register_expr(expr)
+    ctx.context.ast.register_expr(expr)
 }
 
 
@@ -286,6 +286,7 @@ fn build_function_declaration(ctx: &mut Ctx, node: &SyntaxNode) -> FunctionDecla
     FunctionDeclaration {
         name, args,  body,
         ret_type: Some(ret_type),
+        tac_id: 0
     }
 }
 
@@ -303,7 +304,7 @@ pub fn build_file(context: &mut Context, tree: &SyntaxTree) {
 
     while !current.children.is_empty() {
         let fun_decl = build_function_declaration(&mut ctx, tree.node(current.children[0]));
-        ctx.context.sym_table.register_function(&ctx.context.bank, FunctionDefinition::Custom(fun_decl));
+        ctx.context.ast.register_function(&ctx.context.bank, FunctionDefinition::Custom(fun_decl));
         current = tree.node(current.children[1]);
     }
 }

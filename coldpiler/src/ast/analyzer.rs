@@ -3,7 +3,7 @@ use coldpiler_parser::scanner::TokenLoc;
 
 use crate::ast::*;
 use crate::error::{CompilationError, ErrorLoc};
-use crate::symbol_table::{LevelId, SymbolTable};
+use crate::ast::ast_data::{LevelId, AstData};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AnalyzeError {
@@ -43,7 +43,7 @@ impl CompilationError for AnalyzeError {
 }
 
 pub struct Ctx<'a> {
-    table: &'a mut SymbolTable,
+    table: &'a mut AstData,
     errors: &'a mut Vec<AnalyzeError>,
     level: LevelId,
 }
@@ -66,7 +66,7 @@ pub fn analyze_expr(ctx: &mut Ctx, expr_id: ExprId) -> Type {
         return x;
     }
     expr.level = ctx.level;
-    match &mut expr.details {
+    let restype = match &mut expr.details {
         ExprDetail::Var(x) => {
             let name = x.0;
             match ctx.table.search_variable(ctx.level, name.trie_index) {
@@ -187,10 +187,13 @@ pub fn analyze_expr(ctx: &mut Ctx, expr_id: ExprId) -> Type {
             ctx.table.register_variable(ctx.level, decl_name.trie_index, rhs_type, loc);
             rhs_type
         },
-    }
+    };
+    let expr = &mut ctx.table.exprs[expr_id];
+    expr.res_type = Some(restype);
+    restype
 }
 
-pub fn analyze_all(table: &mut SymbolTable) -> Vec<AnalyzeError> {
+pub fn analyze_all(table: &mut AstData) -> Vec<AnalyzeError> {
     let mut errors = vec![];
     let mut ctx = Ctx {
         table,

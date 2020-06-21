@@ -5,7 +5,8 @@ use coldpiler_parser::scanner::TokenLoc;
 use coldpiler_util::radix_tree::RadixTree;
 
 use crate::context::TokenId;
-use crate::symbol_table::{FunctionId, LevelId, SymbolTable};
+use crate::ast::ast_data::{AstData, LevelId, FunctionId};
+use crate::tac::VarLen;
 
 pub type ExprId = usize;
 
@@ -149,7 +150,7 @@ impl BuiltinFunction {
         }
     }
 
-    pub fn register_all(bank: &CommonIdentBank, table: &mut SymbolTable) {
+    pub fn register_all(bank: &CommonIdentBank, table: &mut AstData) {
         use BuiltinFunction::*;
         for x in &[I32Add, I32Sub, I32Mul, I32Div, I32Gt, I32Gte, I32Lt, I32Lte, I32Eq, I32Neq, BoolAnd, BoolOr, BoolEq, PrintlnI32, PrintlnBool] {
             table.register_function(&bank, FunctionDefinition::Builtin(*x));
@@ -163,6 +164,7 @@ pub struct FunctionDeclaration {
     pub args: Vec<(Identifier, Type)>,
     pub body: ExprId,
     pub ret_type: Option<Type>,
+    pub tac_id: usize,
 }
 
 impl FunctionDeclaration {
@@ -181,7 +183,7 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn get_result_type(&self, table: &SymbolTable) -> Option<Type> {
+    pub fn get_result_type(&self, table: &AstData) -> Option<Type> {
         return self.exprs.last()
             .map(|x| table.exprs[*x].res_type)
             .unwrap_or(Some(Type::Unit))
@@ -260,6 +262,17 @@ pub enum Type {
     Custom(TokenId),
 }
 
+impl Type {
+    pub fn get_len(self) -> VarLen {
+        match self {
+            Type::Unit => VarLen::Zero,
+            Type::I32 => VarLen::Word,
+            Type::Bool => VarLen::Byte,
+            Type::Custom(x) => unimplemented!(),// TODO
+        }
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -280,7 +293,7 @@ pub struct IfExpr {
     pub tail: Option<ExprId>
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct IfBlock {
     pub cond: ExprId,
     pub then: ExprId,
